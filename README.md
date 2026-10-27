@@ -13,7 +13,8 @@ this service mirrors records, stores the app's computed snapshots, and exposes d
 | `api/migrations/` | Versioned SQL, applied by the api on start, once each (`schema_migrations`) |
 | `api/tests/` | pytest suite (needs Postgres + Redis; refuses to run outside the test project) |
 | `scripts/` | `dev.sh`, `acceptance.sh`, `backup.sh`, `restore-check.sh`, `live_check.py` |
-| `deploy/intoday.pkasemer.com.conf`, `deploy/install-nginx.sh` | HTTP-only nginx block + the sudo script that installs it and runs certbot |
+| `api/app/static/index.html` | The public home page served at `/` (static, no data, no third-party requests) |
+| `deploy/intoday.pkasemer.com.conf`, `deploy/install-nginx.sh`, `deploy/enable-homepage.sh` | HTTP-only nginx block, the sudo script that installs it and runs certbot, and the sudo script that routes `/` to the home page |
 
 ## Deviation from the spec: no Caddy
 
@@ -63,7 +64,7 @@ Dumps contain all data; copy offsite only if you choose to (the backend never up
 
 ```bash
 scripts/dev.sh up -d --wait db redis    # separate project "intoday-dev", dev token from .env.dev
-scripts/dev.sh run --rm tests           # 45 tests
+scripts/dev.sh run --rm tests           # 46 tests
 scripts/acceptance.sh                   # live checks: cold start, Redis outage, backup/restore, log hygiene
 scripts/dev.sh down -v
 ```

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InToday</title>
+<meta name="description" content="InToday — a quiet ledger for the day at hand.">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light dark">
+<style>
+  :root {
+    --paper: #f1e8d4;
+    --paper-edge: #e2d5b8;
+    --ink: #3a2e21;
+    --ink-faint: rgba(58, 46, 33, .28);
+    --sanguine: #8c3b2a;
+    --serif: "Cormorant Garamond", "EB Garamond", Garamond, "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #211c16;
+      --paper-edge: #17130f;
+      --ink: #dccfae;
+      --ink-faint: rgba(220, 207, 174, .26);
+      --sanguine: #c76a52;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(ellipse at 50% 42%, var(--paper) 0%, var(--paper) 45%, var(--paper-edge) 100%);
+    color: var(--ink);
+    font-family: var(--serif);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px 20px;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { display: flex; flex-direction: column; align-items: center; text-align: center; }
+  svg { width: min(72vw, 400px, 52vh); height: auto; overflow: visible; }
+  .line { fill: none; stroke: var(--ink); stroke-width: 1.1; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .guide { fill: none; stroke: var(--ink-faint); stroke-width: .8; vector-effect: non-scaling-stroke; }
+  .mark { fill: var(--sanguine); }
+  .draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw 2.6s cubic-bezier(.45, 0, .2, 1) forwards; }
+  .draw.late { animation-delay: .7s; }
+  .fade { opacity: 0; animation: fade 1.6s ease 1.6s forwards; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  @keyframes fade { to { opacity: 1; } }
+  h1 {
+    margin: 2.2rem 0 .45rem;
+    font-weight: 400;
+    font-size: clamp(2rem, 6vw, 2.8rem);
+    letter-spacing: .32em;
+    text-indent: .32em; /* balances the trailing letter-space so the word is truly centred */
+    text-transform: uppercase;
+  }
+  p { margin: 0; font-style: italic; font-size: clamp(1.05rem, 3.2vw, 1.25rem); opacity: .82; }
+  footer {
+    margin-top: auto;
+    padding-top: 28px;
+    width: min(92vw, 560px);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: .85rem;
+    letter-spacing: .08em;
+    opacity: .7;
+  }
+  .status::before {
+    content: ""; display: inline-block; width: .5em; height: .5em; margin-right: .6em;
+    border-radius: 50%; background: var(--ink-faint); vertical-align: .08em;
+  }
+  .status.up::before { background: var(--sanguine); }
+  /* Leonardo wrote in mirror script; a small nod. */
+  .mirror { display: inline-block; transform: scaleX(-1); font-style: italic; }
+  @media (prefers-reduced-motion: reduce) {
+    .draw, .fade { animation: none; stroke-dashoffset: 0; opacity: 1; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <svg viewBox="0 0 400 400" role="img" aria-label="A circle and a square, drawn in proportion">
+    <!-- construction guides -->
+    <g class="fade">
+      <line class="guide" x1="200" y1="30" x2="200" y2="370"/>
+      <line class="guide" x1="30" y1="200" x2="370" y2="200"/>
+      <line class="guide" x1="70" y1="70" x2="330" y2="330"/>
+      <line class="guide" x1="330" y1="70" x2="70" y2="330"/>
+      <!-- measure ticks down the left edge, eight divisions -->
+      <g class="guide">
+        <path d="M58 70h12M58 102.5h12M58 135h12M58 167.5h12M58 200h12M58 232.5h12M58 265h12M58 297.5h12M58 330h12"/>
+      </g>
+    </g>
+    <!-- the square: 260 on a side -->
+    <rect class="line draw" pathLength="1" x="70" y="70" width="260" height="260"/>
+    <!-- the circle: touches the base of the square, rises past its crown -->
+    <circle class="line draw late" pathLength="1" cx="200" cy="190" r="140"/>
+    <!-- centres: the navel of the circle, the centre of the square -->
+    <circle class="mark fade" cx="200" cy="190" r="3"/>
+    <circle class="guide fade" cx="200" cy="200" r="6"/>
+  </svg>
+  <h1>InToday</h1>
+  <p>A quiet ledger for the day at hand.</p>
+</main>
+<footer>
+  <span class="status" id="status">&nbsp;</span>
+  <span class="mirror" aria-hidden="true">InToday</span>
+</footer>
+<script>
+  (function () {
+    var el = document.getElementById("status");
+    fetch("/healthz", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var ok = j.status === "ok" || j.status === "degraded";
+        el.textContent = ok ? "In operation" : "Resting";
+        if (ok) el.className = "status up";
+      })
+      .catch(function () { el.textContent = "Unreachable"; });
+  })();
+</script>
+</body>
+</html>

@@ -1,13 +1,17 @@
 import asyncio
+import base64
+import hashlib
 import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from psycopg.types.json import Jsonb
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -20,6 +24,21 @@ from .logs import log, setup_logging
 from .purge import purge
 
 IDEM_TTL_SECONDS = 24 * 3600
+
+_INDEX_HTML = (Path(__file__).parent / "static" / "index.html").read_text()
+_SCRIPT = re.search(r"<script>(.*?)</script>", _INDEX_HTML, re.S).group(1)
+# The home page is static and carries no data. The CSP allows only its own inline style, its one
+# inline script (by hash) and a same-origin fetch of /healthz — nothing else, nothing third-party.
+_HOME_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; connect-src 'self'; "
+        f"script-src 'sha256-{base64.b64encode(hashlib.sha256(_SCRIPT.encode()).digest()).decode()}'; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "public, max-age=300",
+}
 
 
 def _json(status: int, body, headers: dict | None = None) -> JSONResponse:
@@ -103,6 +122,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return json.loads(await request.body())
         except (ValueError, UnicodeDecodeError):
             raise validation_error("request body must be valid JSON") from None
+
+    # ---- home page ---------------------------------------------------------------
+    @app.get("/")
+    async def home():
+        return HTMLResponse(_INDEX_HTML, headers=_HOME_HEADERS)
 
     # ---- health ------------------------------------------------------------------
     @app.get("/healthz")

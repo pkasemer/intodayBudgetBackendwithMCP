@@ -59,3 +59,15 @@ async def test_token_never_appears_in_logs(app, client):
         logger.removeHandler(handler)
     assert lines, "expected request log lines"
     assert not any(TOKEN in line or "wrong-token-value" in line for line in lines)
+
+
+async def test_home_page_is_public_static_and_locked_down(anon):
+    r = await anon.get("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert "InToday" in r.text
+    csp = r.headers["content-security-policy"]
+    assert "default-src 'none'" in csp and "frame-ancestors 'none'" in csp and "'unsafe-inline'" not in csp.split("script-src")[1]
+    assert r.headers["x-content-type-options"] == "nosniff"
+    # No third-party anything: no external URLs in the page.
+    assert "http://" not in r.text.replace("http://www.w3.org", "") and "https://" not in r.text
