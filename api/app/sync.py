@@ -86,7 +86,7 @@ async def safe_cursor(conn, device_id: str, start_seq: int) -> int:
 
 async def fetch_plan(conn, plan_id):
     cur = await conn.execute(
-        "SELECT id, year, month, start_day, deleted_at FROM month_plans WHERE id = %s", (plan_id,)
+        "SELECT id, year, month, deleted_at FROM month_plans WHERE id = %s", (plan_id,)
     )
     return await cur.fetchone()
 
@@ -99,18 +99,8 @@ async def plan_by_month(conn, year: int, month: int):
 
 
 async def plan_for_date(conn, d: date):
-    """The live plan a date belongs to: the calendar-month plan if there is one, else a
-    neighbouring plan whose window covers the date (active preferred)."""
-    exact = await plan_by_month(conn, d.year, d.month)
-    if exact:
-        return exact
-    candidates = []
-    for year, month in v.neighbour_months(d)[1:]:
-        plan = await plan_by_month(conn, year, month)
-        if plan and v.date_in_plan(d, plan["year"], plan["month"], plan["start_day"]):
-            candidates.append(plan)
-    candidates.sort(key=lambda p: p["plan_state"] != "active")
-    return candidates[0] if candidates else None
+    """The live plan whose calendar month holds `d` (used by MCP writes, which carry no plan_id)."""
+    return await plan_by_month(conn, d.year, d.month)
 
 
 async def _check_refs(conn, table: str, rec: dict) -> None:
@@ -122,7 +112,8 @@ async def _check_refs(conn, table: str, rec: dict) -> None:
             raise Rejected("plan_id does not match a stored plan")
         if plan["deleted_at"] is not None and not tombstone:
             raise Rejected("plan_id refers to a deleted plan")
-        if "date" in rec and not tombstone and not v.date_in_plan(rec["date"], plan["year"], plan["month"], plan["start_day"]):
+        # Income is exempt: it belongs to a plan by ownership, not by its landing date (§5.10).
+        if table == "expenses" and not tombstone and not v.date_in_plan(rec["date"], plan["year"], plan["month"]):
             raise Rejected("date falls outside the plan's month")
     goal_id = rec.get("goal_id") if table == "savings_allocations" else rec.get("savings_goal_id")
     if goal_id is not None:

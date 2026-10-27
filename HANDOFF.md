@@ -4,11 +4,15 @@ Status as of 27 Oct 2026. Built from `intoday-backend-spec.md` (backend spec v0.
 says what exists, how it behaves, what was decided on judgement, and what is still open. It contains
 no secrets.
 
-- **Repo:** `git@github.com:pkasemer/intodayBudgetBackendwithMCP.git` (branch `main`, one commit)
+- **Repo:** `git@github.com:pkasemer/intodayBudgetBackendwithMCP.git` (branch `main`)
 - **Live URL:** `https://intoday.pkasemer.com` (nginx on the VPS → `127.0.0.1:8100`, Let's Encrypt)
-- **Verified live (unauthenticated checks only):** `/healthz` → 200 `{"status":"ok","db":"up","redis":"up"}`;
-  no token → 401; `http://` → 301 to `https://`; HSTS present; `/docs` → 404; `/` serves the home page once `deploy/enable-homepage.sh` has been run; containers healthy.
-- **Not verified live:** any authenticated call. The production token was never given to the builder.
+- **Verified live:** `/healthz` → 200 `{"status":"ok","db":"up","redis":"up"}`; no token or a wrong token → 401;
+  `http://` → 301 to `https://`; HSTS present; `/docs` → 404; `/` → 200 home page; containers healthy; and an
+  authenticated `GET /v1/sync/pull?cursor=czE6MA` with the production token → 200 on a still-empty database
+  (0 records, 0 deleted, 0 snapshots, cursor unchanged).
+- **Not yet exercised against production:** authenticated push, `/v1/sync/snapshot`, and the MCP endpoint (all covered
+  by the test suite and the live acceptance run on the dev stack).
+- README.md and this document describe the same system; README is the how-to-run view, this is the contract and status view.
 
 ## 1. What was built
 
@@ -31,6 +35,7 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 
 | Path | What |
 |---|---|
+| `README.md` | how to deploy, operate and test (same facts as this document) |
 | `docker-compose.yml` | production stack |
 | `docker-compose.test.yml` | test overlay (no published ports) + `tests` runner |
 | `api/app/sync.py` | LWW apply, push, pull, full snapshot, erase |
@@ -38,7 +43,7 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 | `api/app/static/index.html` | public home page at `/` (static, strict CSP, no external requests) |
 | `api/app/mcp.py`, `tools.py` | MCP JSON-RPC server and the ten tools |
 | `api/app/guards.py` | bearer auth + Redis rate limiting |
-| `api/tests/` | 46 pytest tests |
+| `api/tests/` | 51 pytest tests |
 | `scripts/` | `dev.sh`, `acceptance.sh`, `backup.sh`, `restore-check.sh`, `live_check.py` |
 | `deploy/` | `intoday.pkasemer.com.conf` (nginx block), `install-nginx.sh`, `enable-homepage.sh` |
 
@@ -61,7 +66,9 @@ order: `month_plans`, `savings_goals`, `bill_templates`, `bills`, `expenses`, `i
 Validation (per record; an invalid record is rejected alone, never the batch):
 amounts are integers 1–9,999,999 (`buffer_amount` allows 0); floats, booleans, zero, negatives and
 8+ digits are rejected; `tag` ∈ `food|transport|dataAirtime|fun|shopping|other`; dates are real
-`YYYY-MM-DD` and must fall in the referenced plan's window; `note` ≤ 200; income `label` required,
+`YYYY-MM-DD`; an **expense** must be dated inside its plan's calendar month, while **income is exempt** (plan
+membership is by ownership, product spec §5.10 rule 3 — salary dated 30 Oct can belong to the November plan);
+`start_day` is stored but ignored by validation; `note` ≤ 200; income `label` required,
 non-blank, ≤ 100; `destination=lockedSavings` requires an existing `savings_goal_id`, `spendable`
 forbids it; `due_day` 1–31; enums are exact. Rejection reasons name the field, never the value.
 
@@ -146,7 +153,7 @@ ten are exposed). No SQL or schema tool exists, by design.
 | `list_income_events` | `year, month` | |
 | `list_goals` | — | `allocated_total`, `income_to_savings_received` (received income only), `locked_total` = sum |
 | `get_insights` | `year, month` | Latest `insights` snapshot, else raw `tag_totals` |
-| `add_expense` | `amount, tag, date, note?` | **Write.** Plan chosen by date; `device_id:"mcp"`; returns row + `device_sync_pending:true` |
+| `add_expense` | `amount, tag, date, note?` | **Write.** Plan = the one whose calendar month holds `date`; `device_id:"mcp"`; returns row + `device_sync_pending:true` |
 | `mark_bill_paid` | `bill_id` | **Write.** Only unpaid, live bills |
 | `mark_income_received` | `income_event_id` | **Write.** Only `expected` rows |
 
@@ -159,7 +166,7 @@ token header, entered in the client's own settings (never pasted into chat or co
 
 ## 4. Testing done
 
-- `scripts/dev.sh run --rm tests` → **46 passed** (real Postgres + Redis, in-process ASGI): auth, push/pull
+- `scripts/dev.sh run --rm tests` → **51 passed** (real Postgres + Redis, in-process ASGI): auth, push/pull
   round trip, paging, idempotent retry (Redis and Postgres paths), LWW incl. tie-break, tombstones and
   purge with an injected clock, snapshot round trip, erasure, every validation rule, all ten MCP tools,
   Redis-down behaviour, rate limits, body cap, log hygiene, and the MCP-write-not-skipped cursor case.
@@ -173,28 +180,32 @@ token header, entered in the client's own settings (never pasted into chat or co
 1. **No Caddy** (nginx already owns 80/443); api binds loopback `:8100` only.
 2. **Ten tools**, not seven (see §3).
 3. **Cursor ordering** by server sequence instead of `(updated_at, id)` (spec §5.1 and §5.3 conflict; see §2).
-4. **Plan date window.** The product spec wasn't available, so what `start_day ≠ 1` means is ambiguous.
-   `validation.plan_window` is deliberately lenient: with `start_day=1` it's the calendar month; otherwise it
-   spans `start_day` of the previous month to `start_day` of the next. `add_expense` prefers the plan whose
-   calendar month holds the date. **Tighten once the product spec's cycle rule is confirmed.**
-5. **`list_goals` totals** sum allocations plus *received* income sent to savings (spec wording is vague);
-   the parts are exposed separately in case this double-counts.
+4. **Plan membership — resolved (27 Oct, product spec §5.10 rule 3):** plans are calendar months, `start_day` is always 1 in v1 and ignored.
+   Income dates are not checked against the plan month; expense dates must be in it. Bills carry no date.
+5. **`list_goals` totals** are per goal: allocations for that goal (`goal_id`) plus *received* income whose
+   `savings_goal_id` is that goal, nothing global; spendable and `expected` income never count. Parts are exposed
+   separately (`allocated_total`, `income_to_savings_received`, `locked_total`). Pinned by a two-goal test.
 6. **`updated_at` fallback for snapshots** with no envelope timestamp (spec's push example has none).
 7. `idempotency_key` is optional (the spec's shape lists it, but nothing breaks without it).
+8. **MCP write clock:** MCP writes use `max(now, row.updated_at + 1ms)` so a phone with a fast clock can't silently overwrite them.
+9. **Failed-auth limiting:** bad tokens share one global counter (30/min → 429); a valid token is never affected.
 
 ## 6. Open items
 
 - **Backups are not scheduled.** `scripts/backup.sh` works (7 dumps, 0600, default `/var/backups/intoday`,
   which needs root to create — or set `BACKUP_DIR`). Add the cron line from its header, then run
   `scripts/restore-check.sh <dump>` once against real data.
-- **Authenticated live smoke test** with the production token (owner to run; example in README).
-- **Cloudflare SSL mode** should be *Full (strict)* since the name is proxied.
+- **Authenticated production checks beyond the empty pull:** push a small batch, `/v1/sync/snapshot`, and MCP
+  `tools/list` / `get_today` from the real client. The production token was pasted into chat once (to run the
+  pull above); **rotate it** when convenient (see §7).
+- **Cloudflare SSL mode** should be *Full (strict)* since the name is proxied (home page and API are already served over HTTPS).
 - **iOS sync client:** not built (separate work item). The two sides must agree on `device_id` format
   (UUID string, stable per install, keychain) and the snapshot payload schemas (spec Appendix A; the
   `insights` fields are still to be fixed by the app developer).
 - **Spec says build only after v1 ships.** The owner explicitly gave the go-ahead to build now.
-- **Git author** on the single commit is `pktest <test@gmail.com>`, not the owner's identity (amend +
-  force-push if wanted). Confirm the GitHub repo is private.
+- **Git author** on the first commit is `pktest <test@gmail.com>`, not the owner's identity (amend +
+  force-push if wanted). Confirm the GitHub repo is private. Later fixes (income/expense dates, goal-totals
+  test, doc alignment) may still be uncommitted — check `git status`.
 - **Docker-image pins** (`postgres:17-alpine`, `redis:7-alpine`, `python:3.13-slim`, pinned Python deps)
   should be re-checked at the next deploy, per the spec.
 
@@ -212,7 +223,8 @@ curl -s https://intoday.pkasemer.com/healthz
 - **Dev/test:** `scripts/dev.sh up -d --wait db redis`, `scripts/dev.sh run --rm tests`,
   `scripts/acceptance.sh`, `scripts/dev.sh down -v` (separate project `intoday-dev`, throwaway token in
   git-ignored `.env.dev`, no published ports).
-- **Secrets:** `.env` and `.env.dev` are git-ignored. The builder never held the production token or DB
-  password; the owner created `.env` on the server.
+- **Secrets:** `.env` and `.env.dev` are git-ignored. The builder did not create or hold the production
+  secrets; the owner created `.env` on the server. The production token was pasted into chat once to run a
+  read-only pull — rotate it if that transcript might be shared.
 - **Boundaries:** the stack makes no outbound calls and has no analytics. It is independent of the trading
   project on this VPS (separate Compose project, no shared files; only the host nginx is shared).

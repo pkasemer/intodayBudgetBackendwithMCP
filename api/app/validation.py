@@ -3,7 +3,6 @@
 Reasons name the offending field but never echo its value — they end up in API
 responses and logs, and values are money data.
 """
-import calendar
 import json
 import re
 import uuid
@@ -252,39 +251,13 @@ def validate_snapshot(raw, batch_device_id: str) -> dict:
     return out
 
 
-# ---- plan windows ----------------------------------------------------------------
+# ---- plan membership -------------------------------------------------------------
+#
+# Product spec §5.10 rule 3: a record belongs to a plan by ownership (plan_id), not by date.
+# Plans are always calendar months and start_day is always 1 in v1, so the only date rule is
+# on expenses: an expense must be dated inside its plan's calendar month. Income is exempt —
+# salary dated Friday 30 Oct legitimately funds the November plan — and needs only a real date
+# and an existing plan. Bills carry no date. start_day is stored but never used in validation.
 
-def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
-    index = year * 12 + (month - 1) + delta
-    return index // 12, index % 12 + 1
-
-
-def _clamped(year: int, month: int, day: int) -> date:
-    return date(year, month, min(day, calendar.monthrange(year, month)[1]))
-
-
-def plan_window(year: int, month: int, start_day: int) -> tuple[date, date]:
-    """[start, end) of dates that belong to a plan.
-
-    The product spec isn't available to this build, so `start_day` semantics are
-    ambiguous (does a plan "2026-10" with start_day 25 run Sep 25–Oct 24 or Oct 25–Nov 24?).
-    Rather than reject legitimate rows, this window is deliberately lenient: with
-    start_day 1 it is exactly the calendar month; otherwise it spans from start_day of the
-    previous month to start_day of the next, which covers both readings. Revisit once the
-    product spec's cycle rule is confirmed.
-    """
-    if start_day == 1:
-        ny, nm = _shift_month(year, month, 1)
-        return date(year, month, 1), date(ny, nm, 1)
-    py, pm = _shift_month(year, month, -1)
-    ny, nm = _shift_month(year, month, 1)
-    return _clamped(py, pm, start_day), _clamped(ny, nm, start_day)
-
-
-def date_in_plan(d: date, year: int, month: int, start_day: int) -> bool:
-    lo, hi = plan_window(year, month, start_day)
-    return lo <= d < hi
-
-
-def neighbour_months(d: date) -> list[tuple[int, int]]:
-    return [(d.year, d.month), _shift_month(d.year, d.month, -1), _shift_month(d.year, d.month, 1)]
+def date_in_plan(d: date, year: int, month: int) -> bool:
+    return d.year == year and d.month == month

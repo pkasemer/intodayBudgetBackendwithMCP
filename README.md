@@ -4,11 +4,15 @@ Sync + MCP service for the InToday iOS app (backend spec v0.1, 27 Oct 2026). One
 token. FastAPI + Postgres 17 + Redis 7 in Docker Compose. The app is the only money-maths engine;
 this service mirrors records, stores the app's computed snapshots, and exposes domain MCP tools.
 
+**Live at `https://intoday.pkasemer.com`** (home page at `/`, API under `/v1`). For the full API and MCP
+contract, decisions and open items, see [HANDOFF.md](HANDOFF.md) — the two documents are kept in step.
+
 ## Layout
 
 | Path | What |
 |---|---|
 | `docker-compose.yml` | `api`, `db`, `redis`. `api` publishes **127.0.0.1 only** (default `:8100`). |
+| `docker-compose.test.yml` | test overlay (no published ports) + `tests` runner |
 | `api/app/` | FastAPI app: `sync.py` (LWW, push/pull/snapshot), `mcp.py` + `tools.py` (MCP), `guards.py` (auth, rate limits), `validation.py` (shared by push and MCP writes) |
 | `api/migrations/` | Versioned SQL, applied by the api on start, once each (`schema_migrations`) |
 | `api/tests/` | pytest suite (needs Postgres + Redis; refuses to run outside the test project) |
@@ -24,7 +28,7 @@ the redirect are nginx's job; see `deploy/`. Everything else follows the spec
 
 ## Deploy (on the VPS)
 
-Nothing below has been run on the production side yet.
+This is the procedure used for the current production deployment (live since 27 Oct 2026).
 
 1. Create `.env` from `.env.example`. Generate both secrets yourself (`openssl rand -hex 32`) and
    never paste the production token into chat. `.env` is git-ignored.
@@ -32,9 +36,11 @@ Nothing below has been run on the production side yet.
    `docker compose up -d --build` — migrations run on api start.
 3. `sudo ./deploy/install-nginx.sh` — installs the nginx site (HTTP only), then `certbot --nginx` adds
    HTTPS and the redirect. If Cloudflare proxies the name, set its SSL mode to *Full (strict)* afterwards.
-4. Smoke: `curl -s https://intoday.pkasemer.com/healthz` → `{"status":"ok","db":"up","redis":"up"}`.
+4. `sudo ./deploy/enable-homepage.sh` — routes `/` (exactly) to the api's static home page. Everything else
+   outside `/v1/` and `/healthz` stays a 404.
+5. Smoke: `curl -s https://intoday.pkasemer.com/healthz` → `{"status":"ok","db":"up","redis":"up"}`.
    (`degraded` = Redis down; sync and MCP still work. `503`/`down` = database down.)
-5. Put the token in the app's keychain, then do the first sync.
+6. Put the token in the app's keychain, then do the first sync.
 
 Logs: `docker compose logs -f api` (JSON, record IDs and counts only — never amounts, notes, labels
 or the token). Health: `/healthz`.
@@ -60,11 +66,17 @@ Dumps contain all data; copy offsite only if you choose to (the backend never up
 `DELETE /v1/account` with the token **and** header `X-Confirm: delete-all`. No undo (beyond the
 7-day backup window).
 
+## Secrets
+
+`.env` and `.env.dev` are git-ignored. The builder did not create or hold the production secrets; the owner
+created `.env` on the server. The production token was later pasted into chat once to run a single read-only
+pull — **rotate it** (see above) if that transcript might be shared.
+
 ## Develop and test
 
 ```bash
 scripts/dev.sh up -d --wait db redis    # separate project "intoday-dev", dev token from .env.dev
-scripts/dev.sh run --rm tests           # 46 tests
+scripts/dev.sh run --rm tests           # 51 tests
 scripts/acceptance.sh                   # live checks: cold start, Redis outage, backup/restore, log hygiene
 scripts/dev.sh down -v
 ```
@@ -92,11 +104,16 @@ ports at all.
 - **Cursor ordering.** §5.3 says pull is ordered by `(updated_at, id)`, §5.1 says the server clock is
   authoritative for cursors. A client-set `updated_at` can go backwards, which would make a
   `(updated_at, id)` cursor skip late-arriving rows, so cursors walk a server-assigned `seq` column.
-- **Plan date window.** "Date must fall inside a plan month" is ambiguous when `start_day` ≠ 1.
-  `validation.plan_window` is deliberately lenient (see its docstring); tighten it once the product
-  spec's cycle rule is known. `add_expense` picks the plan whose calendar month holds the date.
-- **Goal totals.** `list_goals` sums allocations plus *received* income sent to savings, exposed
-  separately (`allocated_total`, `income_to_savings_received`, `locked_total`).
+- **Plan membership (resolved 27 Oct).** Records belong to a plan by ownership (`plan_id`), never by date (product spec §5.10 rule 3).
+  Plans are calendar months and `start_day` is stored but never used in validation. The only date rule is that an
+  *expense* must be dated inside its plan's calendar month; *income* needs just a real date and an existing plan
+  (so salary dated 30 Oct can fund the November plan). `add_expense` picks the plan whose calendar month holds the date.
+- **Goal totals.** `list_goals` totals are per goal: allocations for that goal (`goal_id`) plus *received* income
+  whose `savings_goal_id` is that goal, nothing global; spendable and `expected` income never count. Parts are
+  exposed separately (`allocated_total`, `income_to_savings_received`, `locked_total`). Pinned by a two-goal test.
+- **Snapshot timestamp fallback.** A snapshot with no envelope `updated_at` (the spec's push example has none)
+  uses `payload.as_of`, else server time.
+- **Idempotency key is optional.** The spec's shape lists it, but nothing breaks without it.
 - **MCP write clock.** MCP writes use `max(now, row.updated_at + 1ms)` so a phone with a fast clock
   can't silently overwrite them.
 - **Failed-auth limiting.** Bad tokens share one global counter (30/min → `429`); a valid token is

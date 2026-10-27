@@ -265,3 +265,35 @@ async def test_timestamps_round_trip_in_rfc3339_z(client):
     row = (await client.get("/v1/sync/snapshot")).json()["records"]["month_plans"][0]
     assert row["updated_at"] == "2026-10-27T10:00:00Z" and row["deleted_at"] is None
     assert "seq" not in row
+
+
+async def test_income_belongs_to_plan_by_ownership_not_date(client):
+    """Product spec §5.10 rule 3: salary dated Fri 30 Oct funds the November plan."""
+    nov = h.plan(2026, 11)
+    salary = h.income(nov["id"], date="2026-10-30", label="October salary")
+    body = (await h.push(client, {"month_plans": [nov], "income_events": [salary]})).json()
+    assert body["rejected"] == [] and body["applied"]["income_events"] == 1
+    # A date must still be a real calendar date, and the plan must exist.
+    bad = [h.income(nov["id"], date="2026-02-30"), h.income(h.new_id(), date="2026-10-30")]
+    assert len((await h.push(client, {"income_events": bad})).json()["rejected"]) == 2
+
+
+async def test_expenses_must_sit_in_the_plans_calendar_month(client):
+    nov = h.plan(2026, 11)
+    ok = h.expense(nov["id"], date="2026-11-01")
+    last = h.expense(nov["id"], date="2026-11-30")
+    before = h.expense(nov["id"], date="2026-10-30")
+    after = h.expense(nov["id"], date="2026-12-01")
+    body = (await h.push(client, {"month_plans": [nov], "expenses": [ok, last, before, after]})).json()
+    assert {r["id"] for r in body["rejected"]} == {before["id"], after["id"]}
+    assert body["applied"]["expenses"] == 2
+
+
+async def test_start_day_is_ignored_for_membership(client):
+    """start_day is stored but plans are calendar months: no lenient window around it."""
+    p = h.plan(2026, 10, start_day=25)
+    inside = h.expense(p["id"], date="2026-10-03")
+    spill = h.expense(p["id"], date="2026-09-28")
+    body = (await h.push(client, {"month_plans": [p], "expenses": [inside, spill]})).json()
+    assert [r["id"] for r in body["rejected"]] == [spill["id"]]
+    assert body["applied"]["month_plans"] == 1 and body["applied"]["expenses"] == 1

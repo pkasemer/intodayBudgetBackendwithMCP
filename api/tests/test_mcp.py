@@ -206,3 +206,31 @@ async def test_write_logs_carry_ids_not_amounts(app, client):
         logger.removeHandler(handler)
     joined = "\n".join(lines)
     assert "mcp_write" in joined and "123457" not in joined and "secret-note" not in joined
+
+
+async def test_list_goals_totals_are_per_goal(client):
+    p = h.plan()
+    laptop, trip = h.goal(name="Laptop"), h.goal(name="Trip", target_amount=500000)
+    await h.push(client, {
+        "month_plans": [p],
+        "savings_goals": [laptop, trip],
+        "savings_allocations": [h.allocation(p["id"], laptop["id"], amount=70000)],
+        "income_events": [
+            h.income(p["id"], label="Gift", status="received", amount=50000, kind="extra",
+                     destination="lockedSavings", savings_goal_id=laptop["id"]),
+            h.income(p["id"], label="Refund", status="received", amount=20000, kind="extra",
+                     destination="lockedSavings", savings_goal_id=trip["id"]),
+            h.income(p["id"], label="Pending", status="expected", amount=999000, kind="extra",
+                     destination="lockedSavings", savings_goal_id=trip["id"]),
+            h.income(p["id"], label="Salary", status="received", amount=800000),  # spendable: never counted
+        ],
+    })
+    goals = {g["name"]: g for g in (await call_tool(client, "list_goals"))["structuredContent"]["goals"]}
+    assert (goals["Laptop"]["allocated_total"], goals["Laptop"]["income_to_savings_received"], goals["Laptop"]["locked_total"]) == (70000, 50000, 120000)
+    assert (goals["Trip"]["allocated_total"], goals["Trip"]["income_to_savings_received"], goals["Trip"]["locked_total"]) == (0, 20000, 20000)
+
+
+async def test_add_expense_needs_a_plan_for_that_calendar_month(client):
+    await seed(client)  # October plan only
+    assert (await call_tool(client, "add_expense", {"amount": 100, "tag": "food", "date": "2026-10-31"}))["isError"] is False
+    assert (await call_tool(client, "add_expense", {"amount": 100, "tag": "food", "date": "2026-11-01"}))["isError"] is True
