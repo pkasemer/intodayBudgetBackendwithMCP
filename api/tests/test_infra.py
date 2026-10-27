@@ -10,7 +10,7 @@ async def test_migrations_apply_once(app):
     assert await run_migrations(app.state.settings.database_url) == []
     async with app.state.pool.connection() as conn:
         cur = await conn.execute("SELECT version FROM schema_migrations")
-        assert [r["version"] for r in await cur.fetchall()] == ["001_init"]
+        assert [r["version"] for r in await cur.fetchall()] == ["001_init", "002_usage"]
 
 
 async def test_works_with_redis_down(app_no_redis):

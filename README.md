@@ -23,7 +23,7 @@ testing, decisions and open items. It contains no secrets.
 Verified live on 27 Oct 2026:
 
 - `GET /healthz` → 200 `{"status":"ok","db":"up","redis":"up"}`; HTTPS with HSTS; `http://` → 301 to `https://`.
-- `GET /` → 200, the public home page. `/docs` and any other non-API path → 404.
+- `GET /` → 200, the public home page (its metrics panel stays locked without the token). `GET /v1/stats` without a token → 401. `/docs` and any other non-API path → 404.
 - No token or a wrong token → 401. The first production token (pasted into chat for testing) was **rotated**
   and the old one now returns 401. The owner has tested authenticated requests with the new token.
 - Authenticated `GET /v1/sync/pull` and `GET /v1/sync/snapshot` → 200 on a still-empty database (0 records,
@@ -49,6 +49,9 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 - **Migrations:** `api/migrations/*.sql`, applied by the api on start, once each (`schema_migrations`).
 - **Logs:** JSON to stdout, counts and record IDs only — never amounts, notes, labels or the token.
 - **Retention:** tombstones purged after 30 days, idempotency keys after 7; purge runs at start and every 6 h.
+- **Usage metrics:** counters for API calls and MCP tool calls are batched in memory and flushed to Postgres every 30 s and on
+  shutdown (`usage_daily`, `sync_status`; migration `002_usage`). Counts and timestamps only — never request contents.
+  `DELETE /v1/account` erases them too.
 - **Resource limits:** `api` 512 MiB / 0.5 CPU, `db` 1 GiB / 1 CPU, `redis` 256 MiB. Healthchecks and
   `restart: unless-stopped` on all.
 - **No outbound calls:** no analytics, telemetry or third-party requests. Independent of the trading project
@@ -65,9 +68,10 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 | `api/app/mcp.py`, `tools.py` | MCP JSON-RPC server and the ten tools |
 | `api/app/guards.py` | Bearer auth + Redis rate limiting |
 | `api/app/purge.py` | Tombstone and idempotency-key retention |
-| `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests) |
+| `api/app/metrics.py` | Usage counters (batched, flushed to Postgres) and the numbers behind `GET /v1/stats` |
+| `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests; a locked metrics panel fed by `GET /v1/stats`) |
 | `api/migrations/` | Versioned SQL |
-| `api/tests/` | 51 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
+| `api/tests/` | 59 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
 | `scripts/` | `dev.sh`, `acceptance.sh`, `backup.sh`, `restore-check.sh`, `live_check.py` |
 | `deploy/` | `intoday.pkasemer.com.conf` (HTTP-only nginx block), `install-nginx.sh` (installs it + certbot), `enable-homepage.sh` (routes `/` to the home page) |
 | `.env.example` | Variable names only; `.env` and `.env.dev` are git-ignored |
@@ -168,11 +172,33 @@ RFC 3339 UTC with `Z`. Fractional seconds appear only when non-zero; MCP writes 
   cursors stay valid and return nothing). Without the header: 422, nothing deleted. No undo beyond the 7-day
   backup window.
 - `GET /healthz` (no auth): `ok`, `degraded` (Redis down, still serving) or 503 `down` (database down).
-- `GET /` (no auth): the static home page.
+- `GET /` (no auth): the static home page. It contains no data.
+- `GET /v1/stats` (token required): the numbers shown on the home page, in the **Home page metrics** section below.
+
+### Home page metrics (`GET /v1/stats`)
+
+The home page is public, so its numbers are not: the panel under the tagline is locked until you click *Open the ledger*
+and enter the API token. The token is kept in that tab's `sessionStorage` only, is sent only to this origin (the CSP allows
+no other `connect-src`), and *Close the ledger* forgets it. While open, the panel refreshes every 20 s.
+
+```json
+{ "generated_at": "…", "counting_since": "2026-10-27",
+  "api_calls": {"today": 12, "total": 340}, "mcp_calls": {"today": 3, "total": 41},
+  "records": {"total": 58, "by_table": {"expenses": 40, …}, "snapshots": 2},
+  "devices": 1,
+  "last_sync": {"at": "…", "kind": "push|pull|snapshot", "last_push": "…", "last_pull": "…", "last_snapshot": "…"} }
+```
+
+- **API calls:** authenticated requests to `/v1/*` (sync, MCP, account). Rejected (401/429) requests, `/healthz`, `/` and the
+  stats poll itself are not counted. "Today" is the day in `APP_TIMEZONE` (default Africa/Kampala).
+- **MCP calls:** `tools/call` executions, including ones that return a tool error. `initialize`, `tools/list` and `ping` are not.
+- **Records:** live (non-deleted) rows per table; tombstones are not counted. **Devices:** distinct `device_id`s excluding `mcp`.
+- **Last synced:** the most recent successful push, pull or snapshot (`kind` says which). A `curl` pull with the token counts as a
+  pull, so the panel shows any authenticated sync contact, not only the phone — the `last_push` field is the phone's writes.
 
 ### Rate limits (Redis, fixed 60 s window, per token)
 
-120/min on sync endpoints, 60/min on `/v1/mcp`, separate buckets. If Redis is down, limiting is skipped and
+120/min on sync endpoints (and on `/v1/stats`, in its own bucket), 60/min on `/v1/mcp`, separate buckets. If Redis is down, limiting is skipped and
 logged (never fails closed). Bad-token attempts share one global counter (30/min → 429); a valid token is
 never affected by it.
 
@@ -293,17 +319,17 @@ rebuild ≤ 1 h from the repo + latest dump.
 
 ```bash
 scripts/dev.sh up -d --wait db redis    # separate project "intoday-dev", throwaway token in .env.dev
-scripts/dev.sh run --rm tests           # 51 tests
+scripts/dev.sh run --rm tests           # 59 tests
 scripts/acceptance.sh                   # live checks: cold start, Redis outage, backup/restore, log hygiene
 scripts/dev.sh down -v
 ```
 
 The dev project publishes no ports at all and never touches production.
 
-- **51 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
+- **59 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
   retry (Redis and Postgres paths), LWW incl. tie-break, tombstones and purge with an injected clock, snapshot
   round trip, erasure, every validation rule, ownership-based income dates, expense month edges, `start_day`
-  ignored, all ten MCP tools, per-goal totals, Redis-down behaviour, rate limits, body cap, the home page and
+  ignored, all ten MCP tools, per-goal totals, usage counters and `/v1/stats` (incl. restart survival and erasure), Redis-down behaviour, rate limits, body cap, the home page and
   its headers, log hygiene, and the MCP-write-not-skipped cursor case.
 - **Live acceptance run passed:** cold start from empty volumes, Redis stopped/started under live traffic,
   backup + restore drill (row counts matched), no token or amounts in container logs.
@@ -316,7 +342,7 @@ The dev project publishes no ports at all and never touches production.
 - Only 127.0.0.1:8100 is published by Compose; Postgres and Redis are reachable only inside the Compose network.
 - `.env` and `.env.dev` are git-ignored; the repo ships `.env.example` with names only. The builder did not
   create or hold the production secrets.
-- No `/docs`, `/redoc` or `/openapi.json`. The home page is static, carries no data, makes no third-party
+- No `/docs`, `/redoc` or `/openapi.json`. The home page is static, carries no data (metrics load only after you enter the token), makes no third-party
   requests, and ships with a strict CSP (own inline style, one hashed inline script, same-origin `/healthz` fetch).
 - Logs never contain amounts, notes, labels or the token; 500s log only the exception type (driver messages can
   carry row values).

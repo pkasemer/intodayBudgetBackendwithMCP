@@ -354,5 +354,5 @@ async def _visible_max_seq(conn) -> int:
 async def erase_all(conn) -> None:
     """Delete every row in every table. The seq sequence is deliberately not reset, so
     cursors issued before the erase stay valid and simply return nothing."""
-    tables = sql.SQL(", ").join(sql.Identifier(t) for t in ALL_SEQ_TABLES + ("idempotency_keys",))
+    tables = sql.SQL(", ").join(sql.Identifier(t) for t in ALL_SEQ_TABLES + ("idempotency_keys", "usage_daily", "sync_status"))
     await conn.execute(sql.SQL("TRUNCATE {} CASCADE").format(tables))

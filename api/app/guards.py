@@ -51,8 +51,10 @@ async def _bump(redis, key: str) -> tuple[int, int] | None:
         return None
 
 
-def guard(bucket: str, limit_attr: str):
-    """FastAPI dependency: authenticate, then rate-limit by (token hash, bucket)."""
+def guard(bucket: str, limit_attr: str, count: bool = True):
+    """FastAPI dependency: authenticate, then rate-limit by (token hash, bucket).
+
+    `count=False` keeps a route (the stats poll) out of the home-page API-call counter."""
 
     async def dependency(request: Request) -> None:
         settings = request.app.state.settings
@@ -73,5 +75,7 @@ def guard(bucket: str, limit_attr: str):
         bumped = await _bump(redis, f"rl:{digest}:{bucket}")
         if bumped and bumped[0] > getattr(settings, limit_attr):
             raise ApiError(429, "rate_limited", "rate limit exceeded", {"Retry-After": str(bumped[1])})
+        if count:
+            request.app.state.usage.bump("api")
 
     return dependency

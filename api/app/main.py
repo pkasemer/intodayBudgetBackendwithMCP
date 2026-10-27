@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from psycopg.types.json import Jsonb
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import mcp, sync
+from . import mcp, metrics, sync
 from .config import Settings, load_settings
 from .db import open_pool, run_migrations, write_lock
 from .errors import ApiError, error_body, validation_error
@@ -24,6 +24,7 @@ from .logs import log, setup_logging
 from .purge import purge
 
 IDEM_TTL_SECONDS = 24 * 3600
+USAGE_FLUSH_SECONDS = 30
 
 _INDEX_HTML = (Path(__file__).parent / "static" / "index.html").read_text()
 _SCRIPT = re.search(r"<script>(.*?)</script>", _INDEX_HTML, re.S).group(1)
@@ -54,6 +55,12 @@ async def _purge_loop(app: FastAPI) -> None:
         await asyncio.sleep(app.state.settings.purge_interval_seconds)
 
 
+async def _usage_loop(app: FastAPI) -> None:
+    while True:
+        await asyncio.sleep(USAGE_FLUSH_SECONDS)
+        await app.state.usage.flush(app.state.pool)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -66,14 +73,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.redis = aioredis.from_url(
             app.state.settings.redis_url, socket_connect_timeout=0.5, socket_timeout=0.5
         )
+        app.state.usage = metrics.Usage(app.state.settings.timezone)
         purge_task = asyncio.create_task(_purge_loop(app))
+        usage_task = asyncio.create_task(_usage_loop(app))
         log("started")
         try:
             yield
         finally:
             purge_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await purge_task
+            usage_task.cancel()
+            for task in (purge_task, usage_task):
+                with suppress(asyncio.CancelledError):
+                    await task
+            await app.state.usage.flush(app.state.pool)
             await app.state.redis.aclose()
             await app.state.pool.close()
 
@@ -116,6 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     sync_guard = guard("sync", "sync_rate_limit")
     mcp_guard = guard("mcp", "mcp_rate_limit")
     account_guard = guard("account", "mcp_rate_limit")
+    stats_guard = guard("stats", "sync_rate_limit", count=False)
 
     async def json_body(request: Request):
         try:
@@ -159,6 +172,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except Exception:
                 cached = None
             if cached:
+                state.usage.touch("push", device_id)
                 return _json(200, json.loads(cached))
         async with state.pool.connection() as conn:
             async with conn.transaction():
@@ -167,6 +181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     cur = await conn.execute("SELECT response FROM idempotency_keys WHERE key = %s", (key,))
                     row = await cur.fetchone()
                     if row:
+                        state.usage.touch("push", device_id)
                         return _json(200, row["response"])
                 response = await sync.apply_push(conn, device_id, records, snapshots, start_seq)
                 if key:
@@ -179,6 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await state.redis.set(f"idem:{key}", json.dumps(response), ex=IDEM_TTL_SECONDS)
             except Exception:
                 pass
+        state.usage.touch("push", device_id)
         return _json(200, response)
 
     @app.get("/v1/sync/pull", dependencies=[Depends(sync_guard)])
@@ -190,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             async with conn.transaction():
                 await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 page = await sync.pull_page(conn, seq, limit)
+        request.app.state.usage.touch("pull")
         return _json(200, page)
 
     @app.get("/v1/sync/snapshot", dependencies=[Depends(sync_guard)])
@@ -197,7 +214,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with request.app.state.pool.connection() as conn:
             async with conn.transaction():
                 snapshot = await sync.full_snapshot(conn)
+        request.app.state.usage.touch("snapshot")
         return _json(200, snapshot)
+
+    # ---- stats (feeds the home page; authenticated, never public) ----------------
+    @app.get("/v1/stats", dependencies=[Depends(stats_guard)])
+    async def stats(request: Request):
+        return _json(200, await metrics.collect(request.app.state.pool, request.app.state.usage))
 
     # ---- MCP ---------------------------------------------------------------------
     @app.post("/v1/mcp", dependencies=[Depends(mcp_guard)])
@@ -226,6 +249,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await request.app.state.redis.delete(*keys)
         except Exception:
             pass
+        request.app.state.usage.reset()
         log("account_erased")
         return _json(200, {"deleted": True})
 

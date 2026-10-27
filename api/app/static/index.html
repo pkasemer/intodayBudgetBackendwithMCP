@@ -26,8 +26,8 @@
     }
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
-  body {
+  html { height: 100%; }
+  body { margin: 0; min-height: 100%;
     background: radial-gradient(ellipse at 50% 42%, var(--paper) 0%, var(--paper) 45%, var(--paper-edge) 100%);
     color: var(--ink);
     font-family: var(--serif);
@@ -68,6 +68,25 @@
     letter-spacing: .08em;
     opacity: .7;
   }
+  .ledger { margin-top: 2.4rem; width: min(92vw, 600px); }
+  .ledger button, .ledger input {
+    font: inherit; color: inherit; background: none; border: 0; border-bottom: 1px solid var(--ink-faint);
+    padding: .3em .1em; border-radius: 0;
+  }
+  .ledger button { cursor: pointer; font-style: italic; border-bottom-color: transparent; text-decoration: underline;
+    text-decoration-color: var(--ink-faint); text-underline-offset: .25em; }
+  .ledger button:hover, .ledger button:focus-visible { text-decoration-color: var(--sanguine); outline: none; }
+  .ledger input { width: min(60vw, 20rem); text-align: center; letter-spacing: .04em; }
+  .ledger input:focus { outline: none; border-bottom-color: var(--sanguine); }
+  .ledger form { display: flex; gap: .9rem; justify-content: center; align-items: baseline; flex-wrap: wrap; }
+  .note { min-height: 1.4em; margin-top: .5rem; font-size: .9rem; font-style: italic; opacity: .75; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); gap: 1.4rem 1rem;
+    padding: 1.4rem 0 .4rem; border-top: 1px solid var(--ink-faint); border-bottom: 1px solid var(--ink-faint); }
+  .stat dt { font-size: .8rem; font-style: italic; opacity: .7; letter-spacing: .04em; }
+  .stat dd { margin: .15rem 0 0; font-size: 1.9rem; line-height: 1.1; font-variant-numeric: oldstyle-nums; }
+  .stat small { display: block; margin-top: .25rem; font-size: .8rem; opacity: .65; line-height: 1.35; font-variant-numeric: oldstyle-nums; }
+  .ledger .lock { display: block; margin: .9rem auto 0; font-size: .85rem; opacity: .7; }
+  [hidden] { display: none !important; }
   .status::before {
     content: ""; display: inline-block; width: .5em; height: .5em; margin-right: .6em;
     border-radius: 50%; background: var(--ink-faint); vertical-align: .08em;
@@ -104,6 +123,25 @@
   </svg>
   <h1>InToday</h1>
   <p>A quiet ledger for the day at hand.</p>
+  <section class="ledger" aria-label="Service metrics">
+    <button type="button" id="open">Open the ledger</button>
+    <form id="unlock" hidden>
+      <label for="token" class="sr" style="position:absolute;left:-9999px">Access token</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="access token" required>
+      <button type="submit">Unlock</button>
+    </form>
+    <div class="note" id="note" role="status" aria-live="polite"></div>
+    <div id="metrics" hidden>
+      <dl class="grid">
+        <div class="stat"><dt>API calls</dt><dd id="m-api">–</dd><small id="m-api-sub"></small></div>
+        <div class="stat"><dt>MCP calls</dt><dd id="m-mcp">–</dd><small id="m-mcp-sub"></small></div>
+        <div class="stat"><dt>Records</dt><dd id="m-rec">–</dd><small id="m-rec-sub"></small></div>
+        <div class="stat"><dt>Devices synced</dt><dd id="m-dev">–</dd><small id="m-dev-sub"></small></div>
+        <div class="stat"><dt>Last synced</dt><dd id="m-last">–</dd><small id="m-last-sub"></small></div>
+      </dl>
+      <button type="button" class="lock" id="lock">Close the ledger</button>
+    </div>
+  </section>
 </main>
 <footer>
   <span class="status" id="status">&nbsp;</span>
@@ -111,15 +149,76 @@
 </footer>
 <script>
   (function () {
-    var el = document.getElementById("status");
+    var $ = function (id) { return document.getElementById(id); };
+    var KEY = "intoday-ledger-token", timer = null;
+
+    // Health line (public).
     fetch("/healthz", { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         var ok = j.status === "ok" || j.status === "degraded";
-        el.textContent = ok ? "In operation" : "Resting";
-        if (ok) el.className = "status up";
+        $("status").textContent = ok ? "In operation" : "Resting";
+        if (ok) $("status").className = "status up";
       })
-      .catch(function () { el.textContent = "Unreachable"; });
+      .catch(function () { $("status").textContent = "Unreachable"; });
+
+    // Metrics (private): the token stays in this tab's sessionStorage and is only ever sent to this origin.
+    function getToken() { try { return sessionStorage.getItem(KEY); } catch (e) { return null; } }
+    function setToken(t) { try { t ? sessionStorage.setItem(KEY, t) : sessionStorage.removeItem(KEY); } catch (e) {} }
+    function num(n) { return Number(n).toLocaleString(); }
+    function ago(iso) {
+      var s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+      if (s < 45) return "just now";
+      if (s < 3600) return Math.round(s / 60) + " min ago";
+      if (s < 86400) return Math.round(s / 3600) + " h ago";
+      return Math.round(s / 86400) + " d ago";
+    }
+    function when(iso) { return iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never"; }
+    function show(d) {
+      $("m-api").textContent = num(d.api_calls.today);
+      $("m-api-sub").textContent = "today · " + num(d.api_calls.total) + " in all";
+      $("m-mcp").textContent = num(d.mcp_calls.today);
+      $("m-mcp-sub").textContent = "today · " + num(d.mcp_calls.total) + " in all";
+      $("m-rec").textContent = num(d.records.total);
+      var parts = [];
+      Object.keys(d.records.by_table).forEach(function (k) {
+        if (d.records.by_table[k]) parts.push(k.replace(/_/g, " ") + " " + num(d.records.by_table[k]));
+      });
+      $("m-rec-sub").textContent = parts.length ? parts.join(" · ") : "nothing stored yet";
+      $("m-dev").textContent = num(d.devices);
+      $("m-dev-sub").textContent = d.devices ? "" : "none yet";
+      var ls = d.last_sync;
+      $("m-last").textContent = ls.at ? ago(ls.at) : "never";
+      $("m-last-sub").textContent = ls.at
+        ? ls.kind + " · " + when(ls.at) + (ls.last_push && ls.kind !== "push" ? " · last push " + when(ls.last_push) : "")
+        : "waiting for the app";
+      $("note").textContent = d.counting_since ? "Counting since " + d.counting_since + "." : "";
+    }
+    function lock(message) {
+      setToken(null); clearInterval(timer); timer = null;
+      $("metrics").hidden = true; $("unlock").hidden = !message; $("open").hidden = !!message;
+      $("note").textContent = message || "";
+    }
+    function load(token, fromForm) {
+      return fetch("/v1/stats", { headers: { Authorization: "Bearer " + token }, cache: "no-store" })
+        .then(function (r) {
+          if (r.status === 401) { lock("That token was not accepted."); throw 0; }
+          if (r.status === 429) { $("note").textContent = "Too many attempts. Wait a moment."; throw 0; }
+          if (!r.ok) { $("note").textContent = "The ledger could not be read."; throw 0; }
+          return r.json();
+        })
+        .then(function (d) {
+          setToken(token);
+          $("unlock").hidden = true; $("open").hidden = true; $("metrics").hidden = false;
+          $("token").value = "";
+          show(d);
+          if (!timer) timer = setInterval(function () { if (!document.hidden && getToken()) load(getToken()); }, 20000);
+        });
+    }
+    $("open").onclick = function () { $("open").hidden = true; $("unlock").hidden = false; $("token").focus(); };
+    $("unlock").onsubmit = function (e) { e.preventDefault(); var t = $("token").value.trim(); if (t) load(t, true).catch(function () {}); };
+    $("lock").onclick = function () { lock(""); };
+    if (getToken()) load(getToken()).catch(function () {});
   })();
 </script>
 </body>

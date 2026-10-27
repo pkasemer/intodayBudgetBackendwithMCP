@@ -35,6 +35,7 @@ def tool_listing() -> list[dict]:
 
 async def _call_tool(app, name: str, arguments) -> dict:
     tool = tools.BY_NAME[name]
+    app.state.usage.bump("mcp")
     try:
         args = tools.check_args(tool, arguments)
         async with app.state.pool.connection() as conn:
