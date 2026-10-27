@@ -12,3 +12,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+
+# Editor swap/backup files (a vim swap of .env would contain secrets)
+*.swp
+*.swo
+*~
