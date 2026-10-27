@@ -1,0 +1,14 @@
+# Secrets and local config — never commit
+.env
+.env.*
+!.env.example
+
+# Backups contain the whole database
+*.dump
+backups/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/

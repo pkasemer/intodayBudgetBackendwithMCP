@@ -1,0 +1,18 @@
+# Local test overlay — run with a dev token and a separate project name:
+#   docker compose -p intoday-dev --env-file .env.dev -f docker-compose.yml -f docker-compose.test.yml ...
+# Publishes no ports at all; the test runner talks to the stack over the Compose network.
+services:
+  api:
+    ports: !reset []
+
+  tests:
+    build: { context: ./api, target: test }
+    profiles: [test]
+    environment:
+      INTODAY_TEST: "1"
+      DATABASE_URL: postgres://intoday:${DB_PASSWORD}@db:5432/intoday
+      REDIS_URL: redis://redis:6379/0
+      API_TOKEN: ${API_TOKEN}
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }

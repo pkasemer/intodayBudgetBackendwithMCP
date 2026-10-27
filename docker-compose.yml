@@ -1,0 +1,60 @@
+# InToday backend. Deviation from the spec topology: no `caddy` service — this VPS
+# already runs nginx on 80/443, so the api publishes on loopback only and nginx
+# proxies to it (see deploy/nginx.conf.example). Postgres and Redis publish nothing.
+name: intoday
+
+services:
+  api:
+    build: ./api
+    restart: unless-stopped
+    ports: ["127.0.0.1:${API_PORT:-8100}:8000"]
+    environment:
+      DATABASE_URL: postgres://intoday:${DB_PASSWORD:?set DB_PASSWORD in .env}@db:5432/intoday
+      REDIS_URL: redis://redis:6379/0
+      API_TOKEN: ${API_TOKEN:?set API_TOKEN in .env}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Kampala}
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.5" }
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: intoday
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      POSTGRES_DB: intoday
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intoday -d intoday"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits: { memory: 1G, cpus: "1.0" }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly no --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits: { memory: 256M }
+
+volumes:
+  pgdata: {}
