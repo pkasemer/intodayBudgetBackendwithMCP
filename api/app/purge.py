@@ -6,6 +6,7 @@ from .logs import log
 
 TOMBSTONE_DAYS = 30
 IDEMPOTENCY_DAYS = 7
+ACTIVITY_DAYS = 14
 
 # Loans and debts are childless here: deleting a loan cascades its repayments, and deleting a debt
 # detaches (nulls) the bills and payments that name it.
@@ -47,6 +48,8 @@ async def purge(pool, now: datetime | None = None) -> dict:
             counts["month_plans"] = cur.rowcount
             cur = await conn.execute("DELETE FROM idempotency_keys WHERE created_at < %s", (idem_cutoff,))
             counts["idempotency_keys"] = cur.rowcount
+            cur = await conn.execute("DELETE FROM activity WHERE at < %s", (now - timedelta(days=ACTIVITY_DAYS),))
+            counts["activity"] = cur.rowcount
     if any(counts.values()):
         log("purge", **counts)
     return counts

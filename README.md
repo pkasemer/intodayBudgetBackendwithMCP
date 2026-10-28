@@ -68,10 +68,10 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 | `api/app/mcp.py`, `tools.py` | MCP JSON-RPC server and the ten tools |
 | `api/app/guards.py` | Bearer auth + Redis rate limiting |
 | `api/app/purge.py` | Tombstone and idempotency-key retention |
-| `api/app/metrics.py` | Usage counters (batched, flushed to Postgres) and the numbers behind `GET /v1/stats` |
-| `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests; a locked metrics panel fed by `GET /v1/stats`) |
+| `api/app/metrics.py` | Usage counters and activity events (batched, flushed to Postgres) and the numbers behind `GET /v1/stats` |
+| `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests; a locked observability panel fed by `GET /v1/stats`) |
 | `api/migrations/` | Versioned SQL |
-| `api/tests/` | 82 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
+| `api/tests/` | 90 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
 | `scripts/` | `dev.sh`, `acceptance.sh`, `backup.sh`, `restore-check.sh`, `live_check.py` |
 | `deploy/` | `intoday.pkasemer.com.conf` (HTTP-only nginx block), `install-nginx.sh` (installs it + certbot), `enable-homepage.sh` (routes `/` to the home page) |
 | `.env.example` | Variable names only; `.env` and `.env.dev` are git-ignored |
@@ -211,20 +211,43 @@ RFC 3339 UTC with `Z`. Fractional seconds appear only when non-zero; MCP writes 
 
 The home page is public, so its numbers are not: the panel under the tagline is locked until you click *Open the ledger*
 and enter the API token. The token is kept in that tab's `sessionStorage` only, is sent only to this origin (the CSP allows
-no other `connect-src`), and *Close the ledger* forgets it. While open, the panel refreshes every 20 s.
+no other `connect-src`), and *Close the ledger* forgets it. While open, the panel refreshes every 10 s.
+
+Opened, it shows: things needing attention (or "All quiet"), the five headline numbers, service health (database, Redis, uptime,
+schema and migration), calls per day for 14 days (API with the MCP share overlaid), responses today (answered / turned away /
+rate limited / bad requests / server errors) with typical and slowest latency per kind, rows per table (live and deleted), who has
+written (each phone and Claude/MCP), rejected records with the field-level reason, and a newest-first activity feed.
 
 ```json
 { "generated_at": "…", "counting_since": "2026-10-27",
   "api_calls": {"today": 12, "total": 340}, "mcp_calls": {"today": 3, "total": 41},
   "records": {"total": 58, "by_table": {"expenses": 40, …}, "snapshots": 2},
   "devices": 1,
-  "last_sync": {"at": "…", "kind": "push|pull|snapshot", "last_push": "…", "last_pull": "…", "last_snapshot": "…"} }
+  "last_sync": {"at": "…", "kind": "push|pull|snapshot", "last_push": "…", "last_pull": "…", "last_snapshot": "…"},
+  "health": {"database": "up", "redis": "up|down", "uptime_seconds": 3600, "started_at": "…", "schema_version": 4, "migration": "004_activity"},
+  "days": [{"day": "2026-10-28", "api": 12, "mcp": 3}, …14 entries…],
+  "responses": {"today": {"ok","unauthorized","rate_limited","client_error","server_error"}, "window": {…}, "window_days": 14},
+  "latency": {"push|pull|snapshot|mcp": {"n", "p50", "p95"}},
+  "devices_seen": [{"device_id", "rows", "is_mcp", "last_push"}],
+  "recent": [{"at", "kind", "device_id", "status", "ms", "detail"}],
+  "rejections": [{"at", "device_id", "table", "id", "reason"}],
+  "alerts": [{"level": "warn|bad", "text": "…"}] }
 ```
 
 - **API calls:** authenticated requests to `/v1/*` (sync, MCP, account). Rejected (401/429) requests, `/healthz`, `/` and the
   stats poll itself are not counted. "Today" is the day in `APP_TIMEZONE` (default Africa/Kampala).
 - **MCP calls:** `tools/call` executions, including ones that return a tool error. `initialize`, `tools/list` and `ping` are not.
 - **Records:** live (non-deleted) rows per table; tombstones are not counted. **Devices:** distinct `device_id`s excluding `mcp`.
+- **Responses:** HTTP statuses of `/v1/*` requests (not the stats poll, `/healthz` or `/`), counted per day in `usage_status`.
+  `unauthorized` is 401, `rate_limited` 429, `client_error` any other 4xx, `server_error` 5xx. An erase request is not counted.
+- **Activity feed** (`activity` table, migration 004; kept 14 days, purged with the tombstones): one row per push (applied /
+  skipped / rejected counts, tables touched, and per rejected record its table, id and reason — reasons name a field, never a
+  value; `replay` marks an idempotent retry), pull, snapshot, MCP tool call (tool name, read or write, ok, record id for writes),
+  refused request (401/429, path only) and failed request (other 4xx/5xx, path and error type). Never amounts, notes or bodies.
+  Refused and failed events are capped at 25 per 30 s flush window so a brute-force burst cannot flood the feed (the counters still
+  count every one). Events are written in batches every 30 s; the panel also shows the not-yet-written ones.
+- **Alerts:** Redis down, any 5xx today, rejected records in the last 24 h, rate-limited requests today, 10+ failed sign-ins today,
+  no app sync for over a day.
 - **Last synced:** the most recent successful push, pull or snapshot (`kind` says which). A `curl` pull with the token counts as a
   pull, so the panel shows any authenticated sync contact, not only the phone — the `last_push` field is the phone's writes.
 
@@ -351,17 +374,17 @@ rebuild ≤ 1 h from the repo + latest dump.
 
 ```bash
 scripts/dev.sh up -d --wait db redis    # separate project "intoday-dev", throwaway token in .env.dev
-scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 82 tests (rebuild first: the image bakes in the code)
+scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 90 tests (rebuild first: the image bakes in the code)
 scripts/acceptance.sh                   # live checks: cold start, Redis outage, backup/restore, log hygiene
 scripts/dev.sh down -v
 ```
 
 The dev project publishes no ports at all and never touches production.
 
-- **82 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
+- **90 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
   retry (Redis and Postgres paths), LWW incl. tie-break, tombstones and purge with an injected clock, snapshot
   round trip, erasure, every validation rule, ownership-based income dates, expense month edges, `start_day`
-  ignored, all ten MCP tools, per-goal totals, usage counters and `/v1/stats` (incl. restart survival and erasure), Redis-down behaviour, rate limits, body cap, the home page and
+  ignored, all ten MCP tools, per-goal totals, usage counters and `/v1/stats` (incl. restart survival, erasure, the activity feed, rejection listing, response classes, capped auth bursts and alerts), Redis-down behaviour, rate limits, body cap, the home page and
   its headers, log hygiene, and the MCP-write-not-skipped cursor case. `test_v04.py` covers backend spec v0.4 acceptance items 15–20 and 22
   (item 21, an upgrade with a real phone, needs the app).
 - **Live acceptance run passed:** cold start from empty volumes, Redis stopped/started under live traffic,

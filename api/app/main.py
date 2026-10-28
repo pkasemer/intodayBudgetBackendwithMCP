@@ -46,6 +46,23 @@ def _json(status: int, body, headers: dict | None = None) -> JSONResponse:
     return JSONResponse(body, status_code=status, headers=headers)
 
 
+def _ms(started: float) -> float:
+    return (time.monotonic() - started) * 1000
+
+
+def _push_event(state, device_id: str, response: dict, started: float, replay: bool = False) -> None:
+    """Activity-feed entry for a push: counts, plus table/id/reason for each rejected record
+    (reasons name a field, never a value)."""
+    rejected = response["rejected"]
+    state.usage.event(
+        "push", device_id=device_id, ms=_ms(started),
+        applied=sum(response["applied"].values()), skipped=sum(response["skipped"].values()),
+        rejected=len(rejected), replay=replay,
+        tables={t: n for t, n in response["applied"].items() if n},
+        rejects=[{"table": r["table"], "id": r["id"], "reason": r["reason"]} for r in rejected[:20]],
+    )
+
+
 async def _purge_loop(app: FastAPI) -> None:
     while True:
         try:
@@ -99,9 +116,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if length and length.isdigit() and int(length) > app.state.settings.max_body_bytes:
             return _json(413, error_body("validation", "request body too large"))
         response = await call_next(request)
+        ms = round((time.monotonic() - started) * 1000, 1)
+        path = request.url.path
         # Path only: no query string, no headers (the token lives in a header).
-        log("request", method=request.method, path=request.url.path, status=response.status_code,
-            ms=round((time.monotonic() - started) * 1000, 1))
+        log("request", method=request.method, path=path, status=response.status_code, ms=ms)
+        # The home page, health checks and the stats poll would drown out real traffic.
+        # (An erase request is not counted either: it wiped the counters it would have landed in.)
+        if path.startswith("/v1/") and path != "/v1/stats" and not getattr(request.state, "erased", False):
+            usage = request.app.state.usage
+            code = response.status_code
+            usage.status(code)
+            if code in (401, 429):
+                usage.event("denied", code, path=path)
+            elif code >= 400:
+                usage.event("failed", code, ms=ms, path=path)
         return response
 
     @app.exception_handler(ApiError)
@@ -120,9 +148,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _json(exc.status_code, error_body(code, "not found" if exc.status_code == 404 else "request error"))
 
     @app.exception_handler(Exception)
-    async def unhandled(_: Request, exc: Exception):
+    async def unhandled(request: Request, exc: Exception):
         # Exception type only: driver error messages can carry row values.
         log("unhandled_error", logging.ERROR, error=type(exc).__name__)
+        usage = getattr(request.app.state, "usage", None)
+        if usage is not None:
+            usage.status(500)
+            usage.event("failed", 500, path=request.url.path, error=type(exc).__name__)
         return _json(500, error_body("internal", "internal error"))
 
     sync_guard = guard("sync", "sync_rate_limit")
@@ -162,6 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/sync/push", dependencies=[Depends(sync_guard)])
     async def sync_push(request: Request):
         state = request.app.state
+        started = time.monotonic()
         body = await json_body(request)
         device_id, records, snapshots, key, start_seq = sync.parse_push_envelope(
             body, request.headers.get("idempotency-key"), state.settings.max_push_records
@@ -173,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 cached = None
             if cached:
                 state.usage.touch("push", device_id)
+                _push_event(state, device_id, json.loads(cached), started, replay=True)
                 return _json(200, json.loads(cached))
         async with state.pool.connection() as conn:
             async with conn.transaction():
@@ -182,6 +216,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     row = await cur.fetchone()
                     if row:
                         state.usage.touch("push", device_id)
+                        _push_event(state, device_id, row["response"], started, replay=True)
                         return _json(200, row["response"])
                 response = await sync.apply_push(conn, device_id, records, snapshots, start_seq)
                 if key:
@@ -195,18 +230,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except Exception:
                 pass
         state.usage.touch("push", device_id)
+        _push_event(state, device_id, response, started)
         return _json(200, response)
 
     @app.get("/v1/sync/pull", dependencies=[Depends(sync_guard)])
     async def sync_pull(request: Request, cursor: str | None = None, limit: int = Query(500, ge=1, le=1000)):
         if not cursor:
             raise validation_error("cursor is required; use /v1/sync/snapshot for a first sync")
+        started = time.monotonic()
         seq = sync.decode_cursor(cursor)
         async with request.app.state.pool.connection() as conn:
             async with conn.transaction():
                 await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 page = await sync.pull_page(conn, seq, limit)
         request.app.state.usage.touch("pull")
+        request.app.state.usage.event(
+            "pull", ms=_ms(started), records=sum(len(r) for r in page["records"].values()),
+            deleted=len(page["deleted"]), snapshots=len(page["snapshots"]), has_more=page["has_more"],
+        )
         return _json(200, page)
 
     @app.get("/v1/sync/capabilities", dependencies=[Depends(sync_guard)])
@@ -215,16 +256,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/v1/sync/snapshot", dependencies=[Depends(sync_guard)])
     async def sync_snapshot(request: Request):
+        started = time.monotonic()
         async with request.app.state.pool.connection() as conn:
             async with conn.transaction():
                 snapshot = await sync.full_snapshot(conn)
         request.app.state.usage.touch("snapshot")
+        request.app.state.usage.event(
+            "snapshot", ms=_ms(started), records=sum(len(r) for r in snapshot["records"].values()),
+            snapshots=len(snapshot["snapshots"]),
+        )
         return _json(200, snapshot)
 
     # ---- stats (feeds the home page; authenticated, never public) ----------------
     @app.get("/v1/stats", dependencies=[Depends(stats_guard)])
     async def stats(request: Request):
-        return _json(200, await metrics.collect(request.app.state.pool, request.app.state.usage))
+        state = request.app.state
+        return _json(200, await metrics.collect(state.pool, state.usage, state.redis))
 
     # ---- MCP ---------------------------------------------------------------------
     @app.post("/v1/mcp", dependencies=[Depends(mcp_guard)])
@@ -254,6 +301,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception:
             pass
         request.app.state.usage.reset()
+        request.state.erased = True
+        request.app.state.usage.event("account", action="erased")
         log("account_erased")
         return _json(200, {"deleted": True})
 

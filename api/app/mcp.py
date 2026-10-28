@@ -6,6 +6,7 @@ sampling. Stateless: no session IDs, every POST stands alone. Responses are plai
 """
 import json
 import logging
+import time
 
 from . import sync, tools
 from .db import write_lock
@@ -36,6 +37,7 @@ def tool_listing() -> list[dict]:
 async def _call_tool(app, name: str, arguments) -> dict:
     tool = tools.BY_NAME[name]
     app.state.usage.bump("mcp")
+    started = time.monotonic()
     try:
         args = tools.check_args(tool, arguments)
         async with app.state.pool.connection() as conn:
@@ -46,10 +48,14 @@ async def _call_tool(app, name: str, arguments) -> dict:
                     await conn.execute("SET TRANSACTION READ ONLY")
                 result = _jsonable(await tool.handler(conn, app.state.settings, args))
     except tools.ToolError as exc:
+        app.state.usage.event("mcp", ms=(time.monotonic() - started) * 1000, tool=name, write=tool.write, ok=False)
         return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+    record_id = result[tool.record_key]["id"] if tool.write else None
+    app.state.usage.event("mcp", ms=(time.monotonic() - started) * 1000, tool=name, write=tool.write, ok=True,
+                          record_id=record_id)
     if tool.write:
         # Tool name + record ID only; never amounts or notes.
-        log("mcp_write", tool=name, record_id=result[tool.record_key]["id"])
+        log("mcp_write", tool=name, record_id=record_id)
     return {
         "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
         "structuredContent": result,
@@ -85,6 +91,7 @@ async def handle_message(app, msg):
             result = await _call_tool(app, name, params.get("arguments"))
         except Exception as exc:  # database trouble etc. — type only, messages can carry data
             log("mcp_internal_error", logging.ERROR, tool=name, error=type(exc).__name__)
+            app.state.usage.event("failed", 500, tool=name, error=type(exc).__name__)
             return _error(msg_id, INTERNAL_ERROR, "internal error")
         return {"jsonrpc": "2.0", "id": msg_id, "result": result}
     return _error(msg_id, METHOD_NOT_FOUND, "method not found")
