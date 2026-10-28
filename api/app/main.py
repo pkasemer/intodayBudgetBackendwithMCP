@@ -209,6 +209,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request.app.state.usage.touch("pull")
         return _json(200, page)
 
+    @app.get("/v1/sync/capabilities", dependencies=[Depends(sync_guard)])
+    async def sync_capabilities():
+        return _json(200, {"schema_version": sync.SCHEMA_VERSION, "tables": list(sync.SYNC_TABLES)})
+
     @app.get("/v1/sync/snapshot", dependencies=[Depends(sync_guard)])
     async def sync_snapshot(request: Request):
         async with request.app.state.pool.connection() as conn:

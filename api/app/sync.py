@@ -3,6 +3,7 @@
 Everything here runs inside a caller-supplied transaction on a pooled connection.
 """
 import base64
+import logging
 import uuid
 from datetime import date, datetime, timezone
 
@@ -19,6 +20,7 @@ from .validation import Rejected
 SYNC_TABLES = tuple(v.TABLES)  # dependency order: parents first
 ALL_SEQ_TABLES = SYNC_TABLES + ("snapshots",)
 MCP_DEVICE = "mcp"
+SCHEMA_VERSION = 4  # GET /v1/sync/capabilities; 3 was the v0.3 server (no such endpoint)
 
 
 # ---- serialisation ---------------------------------------------------------------
@@ -30,6 +32,8 @@ def ser_value(value):
         return text + "Z"
     if isinstance(value, (date, uuid.UUID)):
         return value.isoformat() if isinstance(value, date) else str(value)
+    if isinstance(value, list):  # closed_days, reserved_debt_ids
+        return [ser_value(item) for item in value]
     return value
 
 
@@ -103,25 +107,41 @@ async def plan_for_date(conn, d: date):
     return await plan_by_month(conn, d.year, d.month)
 
 
+# The column that points at a savings goal, per table.
+_GOAL_REF = {"income_events": "savings_goal_id", "savings_allocations": "goal_id", "month_plans": "rollover_goal_id"}
+
+
 async def _check_refs(conn, table: str, rec: dict) -> None:
-    """Cross-record rules from §7.3 that need the database."""
+    """Cross-record rules from §7.3 (and v0.4 §5.3) that need the database.
+
+    bills.debt_id and debt_payments.debt_id are deliberately not checked: the debt may arrive
+    on a later page of the same split push, so the id is stored as sent."""
     tombstone = rec["deleted_at"] is not None
-    if "plan_id" in rec:
+    if rec.get("plan_id") is not None:
         plan = await fetch_plan(conn, rec["plan_id"])
         if plan is None:
             raise Rejected("plan_id does not match a stored plan")
-        if plan["deleted_at"] is not None and not tombstone:
+        # A loan outlives its plan (a deleted plan only detaches it), so only loans may name a deleted one.
+        if plan["deleted_at"] is not None and not tombstone and table != "loans":
             raise Rejected("plan_id refers to a deleted plan")
         # Income is exempt: it belongs to a plan by ownership, not by its landing date (§5.10).
         if table == "expenses" and not tombstone and not v.date_in_plan(rec["date"], plan["year"], plan["month"]):
             raise Rejected("date falls outside the plan's month")
-    goal_id = rec.get("goal_id") if table == "savings_allocations" else rec.get("savings_goal_id")
+    if table == "loan_repayments":
+        cur = await conn.execute("SELECT deleted_at FROM loans WHERE id = %s", (rec["loan_id"],))
+        loan = await cur.fetchone()
+        if loan is None:
+            raise Rejected("loan_id does not match a stored loan")
+        if loan["deleted_at"] is not None and not tombstone:
+            raise Rejected("loan_id refers to a deleted loan")
+    goal_id = rec.get(_GOAL_REF.get(table, ""))
     if goal_id is not None:
         cur = await conn.execute("SELECT deleted_at FROM savings_goals WHERE id = %s", (goal_id,))
         goal = await cur.fetchone()
         if goal is None:
             raise Rejected("savings goal does not exist")
-        if goal["deleted_at"] is not None and not tombstone:
+        # A closed plan may keep naming a goal deleted since; only a hard delete clears it.
+        if goal["deleted_at"] is not None and not tombstone and table != "month_plans":
             raise Rejected("savings goal is deleted")
 
 
@@ -152,7 +172,9 @@ def _db_reason(exc: psycopg.Error) -> str:
 
 
 async def _insert_lww(conn, table: str, rec: dict) -> bool:
-    cols = v.column_names(table)
+    # Columns the client did not send are left out of both the INSERT (column default applies)
+    # and the UPDATE (stored value kept) — v0.4 §2.3.
+    cols = [c for c in v.column_names(table) if c in rec]
     ident = sql.Identifier(table)
     assignments = sql.SQL(", ").join(
         sql.SQL("{c} = EXCLUDED.{c}").format(c=sql.Identifier(c)) for c in cols if c != "id"
@@ -260,6 +282,7 @@ async def apply_push(conn, device_id: str, records: dict, snapshots: list, start
     applied = {t: 0 for t in SYNC_TABLES + ("snapshots",)}
     skipped = dict(applied)
     rejected: list[dict] = []
+    loans_touched: set[str] = set()
     for table in SYNC_TABLES:
         for raw in records.get(table, []):
             rec_id = raw.get("id") if isinstance(raw, dict) and isinstance(raw.get("id"), str) else None
@@ -269,6 +292,9 @@ async def apply_push(conn, device_id: str, records: dict, snapshots: list, start
                 rejected.append({"table": table, "id": rec_id, "reason": exc.reason})
                 continue
             (applied if outcome == "applied" else skipped)[table] += 1
+            if outcome == "applied" and table in ("loans", "loan_repayments") and raw.get("deleted_at") is None:
+                loans_touched.add(raw["id"] if table == "loans" else raw["loan_id"])
+    await _log_overpaid_loans(conn, loans_touched)
     for raw in snapshots:
         label = None
         if isinstance(raw, dict):
@@ -287,6 +313,20 @@ async def apply_push(conn, device_id: str, records: dict, snapshots: list, start
         rejected=[{"table": r["table"], "id": r["id"]} for r in rejected],
     )
     return {"applied": applied, "skipped": skipped, "rejected": rejected, "cursor": cursor}
+
+
+async def _log_overpaid_loans(conn, loan_ids: set[str]) -> None:
+    """Repayments summing past the loan are a client bug (the app clamps): log, never reject (v0.4 §4.2)."""
+    if not loan_ids:
+        return
+    cur = await conn.execute(
+        "SELECT l.id FROM loans l JOIN (SELECT loan_id, SUM(amount) AS repaid FROM loan_repayments "
+        "WHERE deleted_at IS NULL AND loan_id = ANY(%s) GROUP BY loan_id) r ON r.loan_id = l.id "
+        "WHERE l.deleted_at IS NULL AND r.repaid > l.amount",
+        ([uuid.UUID(i) for i in loan_ids],),
+    )
+    for row in await cur.fetchall():
+        log("loan_overpaid", logging.WARNING, loan_id=str(row["id"]))
 
 
 # ---- pull / snapshot -------------------------------------------------------------

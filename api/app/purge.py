@@ -7,7 +7,12 @@ from .logs import log
 TOMBSTONE_DAYS = 30
 IDEMPOTENCY_DAYS = 7
 
-_CHILDREN = ("savings_allocations", "income_events", "expenses", "bills", "bill_templates")
+# Loans and debts are childless here: deleting a loan cascades its repayments, and deleting a debt
+# detaches (nulls) the bills and payments that name it.
+_CHILDREN = (
+    "savings_allocations", "income_events", "expenses", "bills", "bill_templates",
+    "loan_repayments", "debt_payments", "category_limits", "loans", "debts",
+)
 
 
 async def purge(pool, now: datetime | None = None) -> dict:
@@ -35,7 +40,8 @@ async def purge(pool, now: datetime | None = None) -> dict:
                 "AND NOT EXISTS (SELECT 1 FROM bills x WHERE x.plan_id = p.id) "
                 "AND NOT EXISTS (SELECT 1 FROM expenses x WHERE x.plan_id = p.id) "
                 "AND NOT EXISTS (SELECT 1 FROM income_events x WHERE x.plan_id = p.id) "
-                "AND NOT EXISTS (SELECT 1 FROM savings_allocations x WHERE x.plan_id = p.id)",
+                "AND NOT EXISTS (SELECT 1 FROM savings_allocations x WHERE x.plan_id = p.id) "
+                "AND NOT EXISTS (SELECT 1 FROM debt_payments x WHERE x.plan_id = p.id)",
                 (tomb_cutoff,),
             )
             counts["month_plans"] = cur.rowcount

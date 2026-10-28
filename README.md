@@ -71,7 +71,7 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 | `api/app/metrics.py` | Usage counters (batched, flushed to Postgres) and the numbers behind `GET /v1/stats` |
 | `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests; a locked metrics panel fed by `GET /v1/stats`) |
 | `api/migrations/` | Versioned SQL |
-| `api/tests/` | 59 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
+| `api/tests/` | 82 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
 | `scripts/` | `dev.sh`, `acceptance.sh`, `backup.sh`, `restore-check.sh`, `live_check.py` |
 | `deploy/` | `intoday.pkasemer.com.conf` (HTTP-only nginx block), `install-nginx.sh` (installs it + certbot), `enable-homepage.sh` (routes `/` to the home page) |
 | `.env.example` | Variable names only; `.env` and `.env.dev` are git-ignored |
@@ -91,6 +91,7 @@ Unknown JSON fields are ignored.
 |---|---|
 | `POST /v1/sync/push` | After every local change (debounced ~2 s) and on app foreground. Sends changed records and the app's computed snapshots. |
 | `GET /v1/sync/pull?cursor=<cursor>` | On foreground and after each push. Fetches changes from other writers (e.g. MCP writes). |
+| `GET /v1/sync/capabilities` | At the start of every sync cycle. `schema_version` 4 means the v0.4 tables and columns below are supported. |
 | `GET /v1/sync/snapshot` | Only on a fresh install or explicit re-provision. Returns everything plus a starting cursor; the app confirms before replacing a non-empty local store. |
 
 Flow: first sync is `/v1/sync/snapshot` → store its `cursor` → from then on push and pull with that cursor
@@ -101,14 +102,45 @@ header). A delete is a normal record with `deleted_at` set. Muse uses `POST /v1/
 ### Records
 
 Every synced record carries `id` (UUID string), `updated_at` (RFC 3339 UTC), `device_id` (string, 1–128
-chars; use a stable per-install UUID), `deleted_at` (null or timestamp). Tables, in dependency order:
-`month_plans`, `savings_goals`, `bill_templates`, `bills`, `expenses`, `income_events`,
-`savings_allocations`. Fields mirror spec §4 field-for-field. Money is a whole-number integer.
+chars; use a stable per-install UUID), `deleted_at` (null or timestamp). Twelve tables, in dependency order
+(this is also the apply order inside a push, and the `tables` list of `/v1/sync/capabilities`):
+`savings_goals`, `bill_templates`, `debts`, `month_plans`, `bills`, `expenses`, `income_events`,
+`savings_allocations`, `loans`, `loan_repayments`, `debt_payments`, `category_limits`. Fields mirror backend spec
+v0.3 §4 and v0.4 §3–4 field-for-field. Money is a whole-number integer.
+
+### Schema 4 (backend spec v0.4)
+
+`GET /v1/sync/capabilities` → `{"schema_version":4,"tables":[…the twelve…]}`. A v0.3 server answers 404; the app then
+sends only v0.3 tables and fields. On first seeing 4 the app pulls, then pushes every row once with the new data.
+
+- **New columns** on `month_plans` (`closed_days`, `rollover_amount`, `rollover_carried`, `rollover_goal_id`,
+  `summary_shown`, `buffer_released_amount`, `buffer_released_on`, `reserved_debt_ids`, `created_at`), `bills`
+  (`is_included`, `exclude_reason`, `debt_id`) and `income_events` (`is_recurring`, `is_rollover`).
+- **New tables:** `debts`, `loans`, `loan_repayments`, `debt_payments`, `category_limits`. What is owed on a loan,
+  and a debt's balance, are derived by the reader — never stored.
+- **A missing key keeps the stored value.** For every column above that is new on an existing table (and for
+  `debts.monthly_payment`, `loans.written_off`, `loan_repayments.landed_as_income`): key absent → default on
+  insert, stored value kept on update; key present with `null` → clears a nullable column; `null` on a
+  non-nullable column is rejected. Older app builds and MCP writes therefore never reset v0.4 data.
+- `closed_days` is stored sorted and de-duplicated (each 1–31). `reserved_debt_ids` is a list of UUIDs with no FK.
+- **References, on physical delete** (tombstones never trigger these): plan → `loans.plan_id` set null,
+  `debt_payments` cascade; loan → `loan_repayments` cascade; debt → `bills.debt_id` and `debt_payments.debt_id` set
+  null (a trigger, because those ids must be accepted before their debt arrives); goal →
+  `month_plans.rollover_goal_id` set null. The 30-day purge covers all five new tables.
+- **Reference checks on push:** `loan_repayments.loan_id` must name a stored live loan; a non-null `loans.plan_id` /
+  `debt_payments.plan_id` must name a stored plan (a loan may name a *deleted* plan — it outlives it); `rollover_goal_id`
+  must name a stored goal (deleted is fine); `bills.debt_id` and `debt_payments.debt_id` are stored as sent even when the
+  debt is unknown. Repayments summing past a loan are logged (`loan_overpaid`, loan id only), never rejected.
+- `category_limits`: one live row per `tag`. A second live row with another id for the same tag is rejected as a
+  conflict; a tombstone frees the tag. The app derives one id per tag, so two phones write the same row.
 
 Validation (per record; an invalid record is rejected alone, never the batch):
 
-- Amounts are integers 1–9,999,999 (`buffer_amount` allows 0). Floats, booleans, zero, negatives and 8+
-  digits are rejected.
+- Amounts are integers 1–9,999,999 (`buffer_amount` allows 0; `savings_goals.target_amount` allows 0 = no target;
+  rollover and released-buffer amounts are 0–9,999,999). **Debts are wider:** `debts.amount` 1–999,999,999 and
+  `monthly_payment` 0–999,999,999, not above `amount`. Floats, booleans, negatives and out-of-range digits are rejected.
+- `person` / debt `name` non-empty ≤ 100; `kind` ∈ `person|loan`; `first_month` `YYYY-MM` with month 1–12;
+  `exclude_reason` ≤ 50; `created_at` an RFC 3339 timestamp with a zone.
 - `tag` ∈ `food|transport|dataAirtime|fun|shopping|other`. Dates are real `YYYY-MM-DD`.
 - **Plan membership is by ownership, never by date** (product spec §5.10 rule 3). Plans are calendar months and
   `start_day` is stored but ignored. An **expense** must be dated inside its plan's calendar month; **income is
@@ -143,7 +175,7 @@ as their `id`.
 ### `GET /v1/sync/pull?cursor=<opaque>&limit=500`
 
 Cursor is required (a first sync uses the snapshot endpoint). Response:
-`{"cursor","has_more","records":{…all seven tables…},"deleted":[{"table","id","deleted_at","updated_at","device_id"}],"snapshots":[…]}`.
+`{"cursor","has_more","records":{…all twelve tables…},"deleted":[{"table","id","deleted_at","updated_at","device_id"}],"snapshots":[…]}`.
 Page until `has_more` is false. Tombstoned rows come back in `deleted`, never in `records`.
 
 ### `GET /v1/sync/snapshot`
@@ -168,7 +200,7 @@ RFC 3339 UTC with `Z`. Fractional seconds appear only when non-zero; MCP writes 
 
 ### Other endpoints
 
-- `DELETE /v1/account` with header `X-Confirm: delete-all` erases every row (the sequence isn't reset, so old
+- `DELETE /v1/account` with header `X-Confirm: delete-all` erases every row of all twelve tables (the sequence isn't reset, so old
   cursors stay valid and return nothing). Without the header: 422, nothing deleted. No undo beyond the 7-day
   backup window.
 - `GET /healthz` (no auth): `ok`, `degraded` (Redis down, still serving) or 503 `down` (database down).
@@ -319,18 +351,19 @@ rebuild ≤ 1 h from the repo + latest dump.
 
 ```bash
 scripts/dev.sh up -d --wait db redis    # separate project "intoday-dev", throwaway token in .env.dev
-scripts/dev.sh run --rm tests           # 59 tests
+scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 82 tests (rebuild first: the image bakes in the code)
 scripts/acceptance.sh                   # live checks: cold start, Redis outage, backup/restore, log hygiene
 scripts/dev.sh down -v
 ```
 
 The dev project publishes no ports at all and never touches production.
 
-- **59 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
+- **82 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
   retry (Redis and Postgres paths), LWW incl. tie-break, tombstones and purge with an injected clock, snapshot
   round trip, erasure, every validation rule, ownership-based income dates, expense month edges, `start_day`
   ignored, all ten MCP tools, per-goal totals, usage counters and `/v1/stats` (incl. restart survival and erasure), Redis-down behaviour, rate limits, body cap, the home page and
-  its headers, log hygiene, and the MCP-write-not-skipped cursor case.
+  its headers, log hygiene, and the MCP-write-not-skipped cursor case. `test_v04.py` covers backend spec v0.4 acceptance items 15–20 and 22
+  (item 21, an upgrade with a real phone, needs the app).
 - **Live acceptance run passed:** cold start from empty volumes, Redis stopped/started under live traffic,
   backup + restore drill (row counts matched), no token or amounts in container logs.
 - Spec §14 items 1–10 and 12–14 are covered by the above; item 11 (TLS/redirect/HSTS) was checked on the live
@@ -365,8 +398,23 @@ The dev project publishes no ports at all and never touches production.
 8. **MCP write clock:** `max(now, row.updated_at + 1ms)` so a phone with a fast clock can't overwrite MCP writes.
 9. **Failed-auth limiting:** bad tokens share one global counter (30/min → 429); a valid token is never affected.
 
+### Backend v0.4 decisions
+
+- **Capabilities returns 4 as soon as this code is deployed**, which is when everything in the v0.4 document except the
+  optional MCP tools is live. The three read tools (`list_loans`, `list_debts`, `get_category_limits`) are **not built**:
+  the spec makes them optional and subject to Hafiz's go-ahead.
+- **Missing key vs `null`** is implemented per column, not per table (see Schema 4): v0.3 columns keep their v0.3
+  behaviour (an omitted nullable column is written as null).
+- **Lenient parents where the spec says "set null":** a loan may name a deleted plan, and a plan may name a deleted goal;
+  both are only cleared by a physical delete. Everything else follows the v0.3 rule (a live child of a deleted parent is
+  rejected).
+- **Migration 003 changes `savings_goals.target_amount`'s check to 0–9,999,999.** Existing rows are unaffected. Rows the
+  phone still holds from the 28 Oct rejection (the "Savings" goal and its dependants) are accepted on the upgrade push.
+
 ## 10. Open items
 
+- **v0.4 is built and tested but not deployed** — `docker compose up -d --build api` applies migration 003 and
+  makes `/v1/sync/capabilities` answer 4. Deploy it before the new app build syncs.
 - **Backups are not scheduled** — add the cron line from `scripts/backup.sh`, then run `restore-check.sh` once
   against real data.
 - **First real sync from the iOS app** and MCP write tools from a real Claude client haven't run against

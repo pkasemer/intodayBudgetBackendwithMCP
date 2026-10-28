@@ -41,6 +41,28 @@ def allocation(plan_id, goal_id, **kw) -> dict:
     return rec(**{"plan_id": plan_id, "goal_id": goal_id, "amount": 50000, **kw})
 
 
+def debt(**kw) -> dict:
+    return rec(**{"name": "Stanbic", "kind": "loan", "amount": 1000000, "started_on": "2026-11-10",
+                  "monthly_payment": 150000, "due_day": 12, "first_month": "2026-11", **kw})
+
+
+def loan(plan_id=None, **kw) -> dict:
+    return rec(**{"plan_id": plan_id, "person": "Sam", "amount": 100000, "lent_on": "2026-11-08",
+                  "due_on": "2026-11-15", "repaid_on": None, "written_off": False, **kw})
+
+
+def repayment(loan_id, **kw) -> dict:
+    return rec(**{"loan_id": loan_id, "amount": 40000, "date": "2026-11-09", "landed_as_income": False, **kw})
+
+
+def debt_payment(debt_id, plan_id, **kw) -> dict:
+    return rec(**{"debt_id": debt_id, "plan_id": plan_id, "amount": 50000, "date": "2026-11-10", **kw})
+
+
+def limit(**kw) -> dict:
+    return rec(**{"tag": "food", "amount": 300000, **kw})
+
+
 def today_snapshot(**payload) -> dict:
     body = {"snapshot_version": 1, "today_date": "2026-10-27", "safe_today": 14900, "remaining_today": 14900,
             "spent_today": 0, "pace_delta": -123600, "banked": 0, "streak_days": 0, "days_left": 5,

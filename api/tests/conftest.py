@@ -13,7 +13,8 @@ if os.environ.get("INTODAY_TEST") != "1":
 TOKEN = os.environ["API_TOKEN"]
 TRUNCATE = (
     "TRUNCATE month_plans, savings_goals, bill_templates, bills, expenses, income_events, "
-    "savings_allocations, snapshots, idempotency_keys, usage_daily, sync_status CASCADE"
+    "savings_allocations, debts, loans, loan_repayments, debt_payments, category_limits, "
+    "snapshots, idempotency_keys, usage_daily, sync_status CASCADE"
 )
 
 

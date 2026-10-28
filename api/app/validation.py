@@ -6,11 +6,14 @@ responses and logs, and values are money data.
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 
 MAX_AMOUNT = 9_999_999
+MAX_DEBT_AMOUNT = 999_999_999  # bank loans exceed 7 digits (v0.4 §5.2)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+MAX_UUID_LIST = 200
 
 EXPENSE_TAGS = ("food", "transport", "dataAirtime", "fun", "shopping", "other")
 
@@ -26,7 +29,7 @@ class Rejected(Exception):
 @dataclass(frozen=True)
 class Field:
     name: str
-    kind: str  # uuid | int | bool | enum | date | text
+    kind: str  # uuid | int | bool | enum | date | text | timestamp | month | int_array | uuid_array
     required: bool = True
     nullable: bool = False
     lo: int = 0
@@ -34,6 +37,9 @@ class Field:
     values: tuple = ()
     max_len: int = 0
     non_empty: bool = False
+    # v0.4 §2.3: a key missing from the JSON keeps the stored value (and takes the column default
+    # on insert); a key present with null sets a nullable column to null.
+    sticky: bool = False
 
 
 def _uuid(name, required=True, nullable=False):
@@ -64,8 +70,31 @@ def _text(name, max_len, non_empty=False, required=True, nullable=False):
     return Field(name, "text", required, nullable, max_len=max_len, non_empty=non_empty)
 
 
-# Insert/apply order matters: parents before children.
+def _sticky(f: Field) -> Field:
+    return replace(f, required=False, sticky=True)
+
+
+# Insert/apply order matters: parents before children (v0.4 §6).
 TABLES: dict[str, tuple[Field, ...]] = {
+    "savings_goals": (
+        _text("name", 200, non_empty=True),
+        _int("target_amount", 0, MAX_AMOUNT),  # 0 = no target (v0.4 §5.1)
+    ),
+    "bill_templates": (
+        _text("name", 200, non_empty=True),
+        _amount("default_amount"),
+        _int("default_due_day", 1, 31),
+        _bool("is_active"),
+    ),
+    "debts": (
+        _text("name", 100, non_empty=True),
+        _enum("kind", ("person", "loan")),
+        _int("amount", 1, MAX_DEBT_AMOUNT),
+        _date("started_on"),
+        _sticky(_int("monthly_payment", 0, MAX_DEBT_AMOUNT)),
+        _int("due_day", 1, 31),
+        Field("first_month", "month"),
+    ),
     "month_plans": (
         _int("year", 2000, 2100),
         _int("month", 1, 12),
@@ -73,16 +102,15 @@ TABLES: dict[str, tuple[Field, ...]] = {
         _int("start_day", 1, 31),
         _enum("plan_state", ("draft", "active", "closed")),
         _enum("rollover_decision", ("savings", "nextMonth", "released"), required=False, nullable=True),
-    ),
-    "savings_goals": (
-        _text("name", 200, non_empty=True),
-        _amount("target_amount"),
-    ),
-    "bill_templates": (
-        _text("name", 200, non_empty=True),
-        _amount("default_amount"),
-        _int("default_due_day", 1, 31),
-        _bool("is_active"),
+        _sticky(Field("closed_days", "int_array", lo=1, hi=31)),
+        _sticky(_int("rollover_amount", 0, MAX_AMOUNT)),
+        _sticky(_bool("rollover_carried")),
+        _sticky(_uuid("rollover_goal_id", nullable=True)),
+        _sticky(_bool("summary_shown")),
+        _sticky(_int("buffer_released_amount", 0, MAX_AMOUNT)),
+        _sticky(Field("buffer_released_on", "date", nullable=True)),
+        _sticky(Field("reserved_debt_ids", "uuid_array")),
+        _sticky(Field("created_at", "timestamp", nullable=True)),
     ),
     "bills": (
         _uuid("plan_id"),
@@ -92,6 +120,9 @@ TABLES: dict[str, tuple[Field, ...]] = {
         _bool("is_paid"),
         _bool("is_one_off"),
         _uuid("template_id", required=False, nullable=True),
+        _sticky(_bool("is_included")),
+        _sticky(_text("exclude_reason", 50, nullable=True)),
+        _sticky(_uuid("debt_id", nullable=True)),
     ),
     "expenses": (
         _uuid("plan_id"),
@@ -110,10 +141,37 @@ TABLES: dict[str, tuple[Field, ...]] = {
         _enum("destination", ("spendable", "lockedSavings")),
         _uuid("savings_goal_id", required=False, nullable=True),
         _text("note", 200, required=False, nullable=True),
+        _sticky(_bool("is_recurring")),
+        _sticky(_bool("is_rollover")),
     ),
     "savings_allocations": (
         _uuid("plan_id"),
         _uuid("goal_id"),
+        _amount("amount"),
+    ),
+    "loans": (
+        _uuid("plan_id", required=False, nullable=True),
+        _text("person", 100, non_empty=True),
+        _amount("amount"),
+        _date("lent_on"),
+        Field("due_on", "date", required=False, nullable=True),
+        Field("repaid_on", "date", required=False, nullable=True),
+        _sticky(_bool("written_off")),
+    ),
+    "loan_repayments": (
+        _uuid("loan_id"),
+        _amount("amount"),
+        _date("date"),
+        _sticky(_bool("landed_as_income")),
+    ),
+    "debt_payments": (
+        _uuid("debt_id", required=False, nullable=True),
+        _uuid("plan_id", required=False, nullable=True),
+        _amount("amount"),
+        _date("date"),
+    ),
+    "category_limits": (
+        _enum("tag", EXPENSE_TAGS),
         _amount("amount"),
     ),
 }
@@ -179,6 +237,22 @@ def _parse_field(f: Field, raw: dict):
         return v
     if f.kind == "date":
         return parse_date(v, f.name)
+    if f.kind == "timestamp":
+        return parse_timestamp(v, f.name)
+    if f.kind == "month":
+        if not isinstance(v, str) or not _MONTH_RE.match(v):
+            raise Rejected(f"{f.name} must be a month in YYYY-MM form")
+        return v
+    if f.kind == "int_array":
+        if not isinstance(v, list) or any(
+            isinstance(n, bool) or not isinstance(n, int) or not f.lo <= n <= f.hi for n in v
+        ):
+            raise Rejected(f"{f.name} must be a list of integers between {f.lo} and {f.hi}")
+        return sorted(set(v))
+    if f.kind == "uuid_array":
+        if not isinstance(v, list) or len(v) > MAX_UUID_LIST:
+            raise Rejected(f"{f.name} must be a list of at most {MAX_UUID_LIST} UUID strings")
+        return list(dict.fromkeys(parse_uuid(item, f.name) for item in v))
     if f.kind == "text":
         if not isinstance(v, str) or len(v) > f.max_len or (f.non_empty and not v.strip()):
             need = "a non-empty string" if f.non_empty else "a string"
@@ -209,7 +283,14 @@ def validate_record(table: str, raw, batch_device_id: str) -> dict:
     """Full validation of a record. Raises Rejected with a value-free reason."""
     rec = parse_base(raw, batch_device_id)
     for f in TABLES[table]:
+        if f.sticky:
+            if f.name not in raw:
+                continue  # absent: the column keeps its stored value (or default on insert)
+            if raw[f.name] is None and not f.nullable:
+                raise Rejected(f"{f.name} must not be null")
         rec[f.name] = _parse_field(f, raw)
+    if table == "debts" and rec.get("monthly_payment", 0) > rec["amount"]:
+        raise Rejected("monthly_payment must not exceed amount")
     if table == "income_events":
         locked = rec["destination"] == "lockedSavings"
         if locked and rec["savings_goal_id"] is None:
