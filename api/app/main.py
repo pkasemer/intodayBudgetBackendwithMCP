@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from psycopg.types.json import Jsonb
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import mcp, metrics, sync
+from . import export, mcp, metrics, sync
 from .config import Settings, load_settings
 from .db import open_pool, run_migrations, write_lock
 from .errors import ApiError, error_body, validation_error
@@ -161,6 +161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     mcp_guard = guard("mcp", "mcp_rate_limit")
     account_guard = guard("account", "mcp_rate_limit")
     stats_guard = guard("stats", "sync_rate_limit", count=False)
+    export_guard = guard("export", "mcp_rate_limit")
 
     async def json_body(request: Request):
         try:
@@ -272,6 +273,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def stats(request: Request):
         state = request.app.state
         return _json(200, await metrics.collect(state.pool, state.usage, state.redis))
+
+    # ---- export ------------------------------------------------------------------
+    def _month_args(year: int | None, month: int | None):
+        if (year is None) != (month is None):
+            raise validation_error("year and month go together: send both or neither")
+        return year, month
+
+    def _download(filename: str, media_type: str, body: bytes) -> Response:
+        return Response(body, media_type=media_type, headers={
+            "Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        })
+
+    @app.get("/v1/export/csv", dependencies=[Depends(export_guard)])
+    async def export_csv(
+        request: Request, table: str = "all", year: int | None = Query(None, ge=2000, le=2100),
+        month: int | None = Query(None, ge=1, le=12), include_deleted: bool = False,
+    ):
+        started = time.monotonic()
+        year, month = _month_args(year, month)
+        if table != "all" and table not in sync.SYNC_TABLES:
+            raise validation_error("table must be one of: all, " + ", ".join(sync.SYNC_TABLES))
+        async with request.app.state.pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                filename, media_type, body, rows = await export.csv_export(conn, table, year, month, include_deleted)
+        request.app.state.usage.event(
+            "export", ms=_ms(started), format="csv", table=table, rows=rows,
+            month=None if year is None else export.month_label(year, month),
+        )
+        return _download(filename, media_type, body)
+
+    @app.get("/v1/export/pdf", dependencies=[Depends(export_guard)])
+    async def export_pdf(
+        request: Request, year: int | None = Query(None, ge=2000, le=2100), month: int | None = Query(None, ge=1, le=12),
+    ):
+        started = time.monotonic()
+        year, month = _month_args(year, month)
+        async with request.app.state.pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                if year is None:
+                    latest = await export.latest_plan_month(conn)
+                    if latest is None:
+                        raise ApiError(404, "not_found", "there is no plan to report on yet")
+                    year, month = latest
+                try:
+                    report = await export.month_report(conn, year, month)
+                except export.NoPlan:
+                    raise ApiError(404, "not_found", f"no plan for {export.month_label(year, month)}") from None
+        body = await asyncio.to_thread(export.render_pdf, report)
+        request.app.state.usage.event(
+            "export", ms=_ms(started), format="pdf", table="report", rows=len(report["expenses"]),
+            month=export.month_label(year, month),
+        )
+        return _download(f"intoday-report-{export.month_label(year, month)}.pdf", "application/pdf", body)
 
     # ---- MCP ---------------------------------------------------------------------
     @app.post("/v1/mcp", dependencies=[Depends(mcp_guard)])

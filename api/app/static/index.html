@@ -121,6 +121,13 @@
   .feed .when, .reject .when { opacity: .6; font-size: .85rem; }
   .feed .kind { font-style: italic; opacity: .8; }
   .feed .sum small, .reject small { display: block; opacity: .65; font-size: .82rem; }
+  .export { display: flex; flex-wrap: wrap; gap: .6rem 1.4rem; align-items: baseline; font-size: .95rem; }
+  .export label { font-style: italic; opacity: .85; }
+  .export select { font: inherit; font-style: normal; color: inherit; background: none; border: 0;
+    border-bottom: 1px solid var(--ink-faint); padding: .2em .1em; border-radius: 0; max-width: 11rem; }
+  .export select option { background: var(--paper); color: var(--ink); }
+  .export select:focus { outline: none; border-bottom-color: var(--sanguine); }
+  .export .actions { display: flex; gap: 1.2rem; flex-wrap: wrap; }
   .empty { font-style: italic; opacity: .6; font-size: .92rem; margin: 0; }
   .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: .78em; }
   @media (max-width: 520px) {
@@ -195,6 +202,17 @@
       <section class="folio"><h2>Who has written</h2><table class="t" id="devices"></table></section>
       <section class="folio"><h2>Rejected records<small>by the server, last 20</small></h2><ul class="reject" id="rejections"></ul></section>
       <section class="folio"><h2>Recent activity<small id="feed-sub"></small></h2><ul class="feed" id="feed"></ul></section>
+      <section class="folio"><h2>Export<small>your data, as files</small></h2>
+        <div class="export">
+          <label>Data <select id="x-table"></select></label>
+          <label>Month <select id="x-month"></select></label>
+          <span class="actions">
+            <button type="button" id="x-csv">Download CSV</button>
+            <button type="button" id="x-pdf">Download PDF report</button>
+          </span>
+        </div>
+        <p class="plain" id="x-note"></p>
+      </section>
       <button type="button" class="lock" id="lock">Close the ledger</button>
     </div>
   </section>
@@ -369,6 +387,11 @@
         case "failed":
           line = e.status + " on " + (x.path || x.tool || "a request") + (x.error ? " (" + x.error + ")" : "");
           return { text: line, extra: [], bad: true, kind: "failed" };
+        case "export":
+          line = "exported " + (x.format === "pdf" ? "the PDF report" : (x.table === "all" ? "every table" : label(x.table)) + " as CSV") +
+            (x.month ? " for " + x.month : "");
+          extra.push(num(x.rows) + " row" + (x.rows === 1 ? "" : "s"));
+          return { text: line, extra: extra, bad: false, kind: "export" };
         case "account":
           return { text: "all stored data was erased", extra: [], bad: true, kind: "erased" };
       }
@@ -391,6 +414,47 @@
         ul.appendChild(li);
       });
     }
+    // Export: the files need the token, so they are fetched here and saved from a blob.
+    var exportShape = "";
+    function fillExport(d) {
+      var tables = Object.keys(d.records.by_table), shape = tables.join() + "|" + d.months.join();
+      if (shape === exportShape) return; // keep the person's selection across refreshes
+      exportShape = shape;
+      var t = clear($("x-table")), m = clear($("x-month")), o;
+      o = el("option", "", "All tables (zip)"); o.value = "all"; t.appendChild(o);
+      tables.forEach(function (k) { o = el("option", "", label(k)); o.value = k; t.appendChild(o); });
+      o = el("option", "", "All months / latest"); o.value = ""; m.appendChild(o);
+      d.months.forEach(function (k) { o = el("option", "", k); o.value = k; m.appendChild(o); });
+    }
+    function download(path, params) {
+      var q = new URLSearchParams(params).toString(), name = "intoday-export";
+      $("x-note").textContent = "Preparing…";
+      fetch(path + (q ? "?" + q : ""), { headers: { Authorization: "Bearer " + getToken() }, cache: "no-store" })
+        .then(function (r) {
+          if (r.status === 401) { lock("That token was not accepted."); throw new Error("Signed out."); }
+          if (!r.ok) return r.json().then(function (j) { throw new Error((j.error && j.error.message) || "The export failed."); });
+          var m = /filename="([^"]+)"/.exec(r.headers.get("content-disposition") || "");
+          if (m) name = m[1];
+          return r.blob();
+        })
+        .then(function (blob) {
+          var a = document.createElement("a");
+          a.href = URL.createObjectURL(blob); a.download = name;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+          $("x-note").textContent = "Saved " + name + " (" + Math.max(1, Math.round(blob.size / 1024)) + " KB).";
+        })
+        .catch(function (e) { $("x-note").textContent = e.message || "The export failed."; });
+    }
+    function monthParams() {
+      var v = $("x-month").value;
+      return v ? { year: v.slice(0, 4), month: String(parseInt(v.slice(5), 10)) } : {};
+    }
+    $("x-csv").onclick = function () {
+      var p = monthParams(); p.table = $("x-table").value; download("/v1/export/csv", p);
+    };
+    $("x-pdf").onclick = function () { download("/v1/export/pdf", monthParams()); };
+
     function show(d) {
       $("m-api").textContent = num(d.api_calls.today);
       $("m-api-sub").textContent = "today · " + num(d.api_calls.total) + " in all";
@@ -419,6 +483,7 @@
       renderDevices(d.devices_seen);
       renderRejections(d.rejections);
       renderFeed(d.recent);
+      fillExport(d);
     }
     function lock(message) {
       setToken(null); clearInterval(timer); timer = null;

@@ -67,11 +67,12 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 | `api/app/validation.py` | Record validation shared by push and MCP writes |
 | `api/app/mcp.py`, `tools.py` | MCP JSON-RPC server and the ten tools |
 | `api/app/guards.py` | Bearer auth + Redis rate limiting |
+| `api/app/export.py` | CSV / zip export and the monthly PDF report (`GET /v1/export/*`; PDF via `fpdf2`) |
 | `api/app/purge.py` | Tombstone and idempotency-key retention |
 | `api/app/metrics.py` | Usage counters and activity events (batched, flushed to Postgres) and the numbers behind `GET /v1/stats` |
 | `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests; a locked observability panel fed by `GET /v1/stats`) |
 | `api/migrations/` | Versioned SQL |
-| `api/tests/` | 90 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
+| `api/tests/` | 102 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
 | `scripts/` | `dev.sh`, `acceptance.sh`, `backup.sh`, `restore-check.sh`, `live_check.py` |
 | `deploy/` | `intoday.pkasemer.com.conf` (HTTP-only nginx block), `install-nginx.sh` (installs it + certbot), `enable-homepage.sh` (routes `/` to the home page) |
 | `.env.example` | Variable names only; `.env` and `.env.dev` are git-ignored |
@@ -197,6 +198,24 @@ Every live record plus live snapshots, consistent as of one moment, plus a `curs
 
 RFC 3339 UTC with `Z`. Fractional seconds appear only when non-zero; MCP writes carry milliseconds.
 **The client must parse both with and without fractional seconds.**
+
+### Export (`GET /v1/export/csv`, `GET /v1/export/pdf`)
+
+Token required; rate-limited like MCP (60/min); read-only; answered with `Content-Disposition: attachment` and `Cache-Control: no-store`.
+The home page's *Export* section calls these (the token never leaves the tab), or use `curl.exe -H "Authorization: Bearer …" -o file URL`.
+
+- **`/v1/export/csv?table=<name|all>&year=&month=&include_deleted=false`** — one table as CSV, or `all` (the default) as a zip with
+  one CSV per table (all twelve, in dependency order). Columns are the stored columns; plan-owned tables (`bills`, `expenses`,
+  `income_events`, `savings_allocations`, `loans`, `debt_payments`) get a leading `plan` column (`2026-10`). `year` and `month`
+  go together and limit those tables to that plan month (loans not attached to a plan are then left out); goals, templates, debts,
+  limits and loan repayments are always exported in full. Deleted rows are left out unless `include_deleted=true`. Files are UTF-8
+  with a BOM (so Excel opens them correctly); lists are `;`-joined; booleans are `true`/`false`; text that starts with `= + - @`
+  is prefixed with `'` so a spreadsheet cannot run it as a formula.
+- **`/v1/export/pdf?year=&month=`** — a monthly report: summary sums, spending by category, income, bills, every expense, goals
+  funded that month, money lent and still owed, and debts with derived balances (the last two are all-time). With no `year`/`month` it
+  reports the latest plan; 404 if the month has no plan. These are plain sums of what is recorded, not the app's Today rules.
+  The PDF uses built-in Latin-1 fonts, so emoji and non-Latin characters in names or notes print as `?` (the CSV keeps them).
+- Each export adds an `export` entry to the activity feed (format, table, row count, month — never contents).
 
 ### Other endpoints
 
@@ -374,14 +393,14 @@ rebuild ≤ 1 h from the repo + latest dump.
 
 ```bash
 scripts/dev.sh up -d --wait db redis    # separate project "intoday-dev", throwaway token in .env.dev
-scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 90 tests (rebuild first: the image bakes in the code)
+scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 102 tests (rebuild first: the image bakes in the code)
 scripts/acceptance.sh                   # live checks: cold start, Redis outage, backup/restore, log hygiene
 scripts/dev.sh down -v
 ```
 
 The dev project publishes no ports at all and never touches production.
 
-- **90 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
+- **102 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
   retry (Redis and Postgres paths), LWW incl. tie-break, tombstones and purge with an injected clock, snapshot
   round trip, erasure, every validation rule, ownership-based income dates, expense month edges, `start_day`
   ignored, all ten MCP tools, per-goal totals, usage counters and `/v1/stats` (incl. restart survival, erasure, the activity feed, rejection listing, response classes, capped auth bursts and alerts), Redis-down behaviour, rate limits, body cap, the home page and

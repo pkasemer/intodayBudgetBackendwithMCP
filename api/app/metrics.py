@@ -162,6 +162,10 @@ async def collect(pool, usage: Usage, redis=None) -> dict:
             feed = await cur.fetchall()
             cur = await conn.execute("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1")
             migration = await cur.fetchone()
+            cur = await conn.execute(
+                "SELECT year, month FROM month_plans WHERE deleted_at IS NULL ORDER BY year DESC, month DESC"
+            )
+            months = [f"{r['year']}-{r['month']:02d}" for r in await cur.fetchall()]
 
     redis_state = "unknown"
     if redis is not None:
@@ -276,6 +280,7 @@ async def collect(pool, usage: Usage, redis=None) -> dict:
             "started_at": sync.ser_value(usage.started_at),
             "schema_version": sync.SCHEMA_VERSION, "migration": migration["version"] if migration else None,
         },
+        "months": months,
         "days": days,
         "responses": {"today": responses_today, "window": responses_window, "window_days": DAYS_SHOWN},
         "latency": latency,
