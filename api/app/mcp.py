@@ -22,12 +22,7 @@ def _error(msg_id, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
 
 
-def _jsonable(obj):
-    if isinstance(obj, dict):
-        return {k: _jsonable(val) for k, val in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_jsonable(val) for val in obj]
-    return sync.ser_value(obj)
+_jsonable = sync.ser_deep
 
 
 def tool_listing() -> list[dict]:

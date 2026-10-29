@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from psycopg.types.json import Jsonb
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import export, mcp, metrics, sync
+from . import dashboard, export, mcp, metrics, sync
 from .config import Settings, load_settings
 from .db import open_pool, run_migrations, write_lock
 from .errors import ApiError, error_body, validation_error
@@ -120,9 +120,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         path = request.url.path
         # Path only: no query string, no headers (the token lives in a header).
         log("request", method=request.method, path=path, status=response.status_code, ms=ms)
-        # The home page, health checks and the stats poll would drown out real traffic.
+        # The home page, health checks and the dashboard's own polls would drown out real traffic.
         # (An erase request is not counted either: it wiped the counters it would have landed in.)
-        if path.startswith("/v1/") and path != "/v1/stats" and not getattr(request.state, "erased", False):
+        if path.startswith("/v1/") and path not in ("/v1/stats", "/v1/dashboard") and not getattr(request.state, "erased", False):
             usage = request.app.state.usage
             code = response.status_code
             usage.status(code)
@@ -162,6 +162,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     account_guard = guard("account", "mcp_rate_limit")
     stats_guard = guard("stats", "sync_rate_limit", count=False)
     export_guard = guard("export", "mcp_rate_limit")
+    dashboard_guard = guard("dashboard", "sync_rate_limit", count=False)  # a UI poll, like the stats
 
     async def json_body(request: Request):
         try:
@@ -273,6 +274,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def stats(request: Request):
         state = request.app.state
         return _json(200, await metrics.collect(state.pool, state.usage, state.redis))
+
+    # ---- dashboard data (token required; feeds the dashboard view) ------------------
+    @app.get("/v1/dashboard", dependencies=[Depends(dashboard_guard)])
+    async def dashboard_data(
+        request: Request, year: int | None = Query(None, ge=2000, le=2100), month: int | None = Query(None, ge=1, le=12),
+    ):
+        if (year is None) != (month is None):
+            raise validation_error("year and month go together: send both or neither")
+        async with request.app.state.pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                try:
+                    data = await dashboard.build(conn, request.app.state.settings.timezone, year, month)
+                except export.NoPlan:
+                    raise ApiError(404, "not_found", f"no plan for {export.month_label(year, month)}") from None
+        return _json(200, dashboard.serialise(data))
 
     # ---- export ------------------------------------------------------------------
     def _month_args(year: int | None, month: int | None):

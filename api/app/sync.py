@@ -37,6 +37,15 @@ def ser_value(value):
     return value
 
 
+def ser_deep(obj):
+    """ser_value through nested dicts and lists (dates, timestamps and UUIDs become strings)."""
+    if isinstance(obj, dict):
+        return {k: ser_deep(val) for k, val in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [ser_deep(val) for val in obj]
+    return ser_value(obj)
+
+
 def ser_row(row: dict) -> dict:
     return {k: ser_value(val) for k, val in row.items() if k != "seq"}
 

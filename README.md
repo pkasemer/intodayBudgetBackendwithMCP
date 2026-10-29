@@ -67,12 +67,13 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 | `api/app/validation.py` | Record validation shared by push and MCP writes |
 | `api/app/mcp.py`, `tools.py` | MCP JSON-RPC server and the ten tools |
 | `api/app/guards.py` | Bearer auth + Redis rate limiting |
+| `api/app/dashboard.py` | The month-in-full payload behind `GET /v1/dashboard` |
 | `api/app/export.py` | CSV / zip export and the monthly PDF report (`GET /v1/export/*`; PDF via `fpdf2`) |
 | `api/app/purge.py` | Tombstone and idempotency-key retention |
 | `api/app/metrics.py` | Usage counters and activity events (batched, flushed to Postgres) and the numbers behind `GET /v1/stats` |
-| `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests; a locked observability panel fed by `GET /v1/stats`) |
+| `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests; the landing page plus, after the token is accepted, the dashboard view fed by `GET /v1/dashboard` and `GET /v1/stats`) |
 | `api/migrations/` | Versioned SQL |
-| `api/tests/` | 102 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
+| `api/tests/` | 111 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
 | `scripts/` | `dev.sh`, `acceptance.sh`, `backup.sh`, `restore-check.sh`, `live_check.py` |
 | `deploy/` | `intoday.pkasemer.com.conf` (HTTP-only nginx block), `install-nginx.sh` (installs it + certbot), `enable-homepage.sh` (routes `/` to the home page) |
 | `.env.example` | Variable names only; `.env` and `.env.dev` are git-ignored |
@@ -226,7 +227,28 @@ The home page's *Export* section calls these (the token never leaves the tab), o
 - `GET /` (no auth): the static home page. It contains no data.
 - `GET /v1/stats` (token required): the numbers shown on the home page, in the **Home page metrics** section below.
 
-### Home page metrics (`GET /v1/stats`)
+### The dashboard (home page after unlock)
+
+`/` shows the landing page. *Open the ledger* asks for the token; once `/v1/dashboard` and `/v1/stats` accept it, the page swaps to
+a dashboard in the same document (no new route, so no nginx change; the browser's back button and `#/tab` links work). The token
+stays in that tab's `sessionStorage`, is sent only to this origin, and *Lock* forgets it and returns to the landing page. Reloading
+with a stored token goes straight back to the dashboard. Data refreshes every 15 s while the tab is visible.
+
+- **Overview:** six totals for the month (income received, spent, bills, saved, owed to you, you owe), the app's *Today* numbers
+  (from its synced snapshot), daily spending, spending by category against any limits, and what's coming up (unpaid bills with days
+  until due or late, expected income).
+- **Spending:** categories, the daily chart and every expense with category filters.
+- **Money:** income, bills with paid/unpaid state, savings goals, money lent (with late flags) and debts (progress toward paid off).
+- **Reports:** a six-month income/spent/bills chart, the month's totals, the app's insights snapshot, and **Export** (CSV or the PDF).
+- **System:** the operational view below (health, calls, responses, writers, rejected records, live feed).
+- A month picker and arrows in the header switch the plan month; a banner appears on any tab when something needs attention.
+
+`GET /v1/dashboard?year=&month=` (token required; not counted as an API call; `year`/`month` together or neither, default the
+latest plan, 404 for a month without a plan) returns one month in full: `months`, `plan`, `totals`, `days`, `by_tag` (with limits),
+`income`, `bills`, `expenses` (newest first, max 1,000), `goals`, `loans`, `debts`, a six-month `trend`, and the app's `today` and
+`insights` snapshots passed through untouched. All figures are plain sums of stored data; the app's Today rules are richer.
+
+### Operations (`GET /v1/stats`, the System tab)
 
 The home page is public, so its numbers are not: the panel under the tagline is locked until you click *Open the ledger*
 and enter the API token. The token is kept in that tab's `sessionStorage` only, is sent only to this origin (the CSP allows
@@ -393,14 +415,14 @@ rebuild ≤ 1 h from the repo + latest dump.
 
 ```bash
 scripts/dev.sh up -d --wait db redis    # separate project "intoday-dev", throwaway token in .env.dev
-scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 102 tests (rebuild first: the image bakes in the code)
+scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 111 tests (rebuild first: the image bakes in the code)
 scripts/acceptance.sh                   # live checks: cold start, Redis outage, backup/restore, log hygiene
 scripts/dev.sh down -v
 ```
 
 The dev project publishes no ports at all and never touches production.
 
-- **102 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
+- **111 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
   retry (Redis and Postgres paths), LWW incl. tie-break, tombstones and purge with an injected clock, snapshot
   round trip, erasure, every validation rule, ownership-based income dates, expense month edges, `start_day`
   ignored, all ten MCP tools, per-goal totals, usage counters and `/v1/stats` (incl. restart survival, erasure, the activity feed, rejection listing, response classes, capped auth bursts and alerts), Redis-down behaviour, rate limits, body cap, the home page and
@@ -455,8 +477,6 @@ The dev project publishes no ports at all and never touches production.
 
 ## 10. Open items
 
-- **v0.4 is built and tested but not deployed** — `docker compose up -d --build api` applies migration 003 and
-  makes `/v1/sync/capabilities` answer 4. Deploy it before the new app build syncs.
 - **Backups are not scheduled** — add the cron line from `scripts/backup.sh`, then run `restore-check.sh` once
   against real data.
 - **First real sync from the iOS app** and MCP write tools from a real Claude client haven't run against
