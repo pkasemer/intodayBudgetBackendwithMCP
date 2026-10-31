@@ -264,6 +264,93 @@ async def get_insights(conn, settings, args):
     return {"snapshot": None, "note": "No insights snapshot yet — the app has not synced.", "tag_totals": totals}
 
 
+async def list_months(conn, settings, args):
+    cur = await conn.execute(
+        "SELECT year, month, plan_state FROM month_plans WHERE deleted_at IS NULL ORDER BY year DESC, month DESC"
+    )
+    return {"months": await cur.fetchall()}
+
+
+async def list_loans(conn, settings, args):
+    today = datetime.now(settings.timezone).date()
+    cur = await conn.execute(
+        "SELECT l.id, l.person, l.amount, l.lent_on, l.due_on, l.repaid_on, l.written_off, l.updated_at, "
+        "COALESCE((SELECT SUM(r.amount) FROM loan_repayments r WHERE r.loan_id = l.id AND r.deleted_at IS NULL), 0) "
+        "AS repaid_total FROM loans l WHERE l.deleted_at IS NULL "
+        + ("AND l.repaid_on IS NULL AND NOT l.written_off " if args.get("open_only") else "")
+        + "ORDER BY l.due_on NULLS LAST, l.lent_on, l.id"
+    )
+    loans, owed, late_count = [], 0, 0
+    for row in await cur.fetchall():
+        row["status"] = "written_off" if row["written_off"] else "repaid" if row["repaid_on"] else "open"
+        row["remaining"] = max(row["amount"] - row["repaid_total"], 0)
+        row["late"] = bool(row["status"] == "open" and row["remaining"] > 0 and row["due_on"] and row["due_on"] < today)
+        if row["status"] == "open":
+            owed += row["remaining"]
+        late_count += row["late"]
+        loans.append(row)
+    return {"loans": loans, "owed_total": owed, "late_count": late_count}
+
+
+async def list_debts(conn, settings, args):
+    # balance = amount − paid included bills that name the debt − extra debt payments (same sum as the PDF report).
+    cur = await conn.execute(
+        "SELECT d.id, d.name, d.kind, d.amount, d.monthly_payment, d.due_day, d.started_on, d.first_month, d.updated_at, "
+        "COALESCE((SELECT SUM(b.amount) FROM bills b WHERE b.debt_id = d.id AND b.is_paid AND b.is_included "
+        "AND b.deleted_at IS NULL), 0) "
+        "+ COALESCE((SELECT SUM(p.amount) FROM debt_payments p WHERE p.debt_id = d.id AND p.deleted_at IS NULL), 0) "
+        "AS paid_total FROM debts d WHERE d.deleted_at IS NULL ORDER BY d.name, d.id"
+    )
+    debts = await cur.fetchall()
+    cur = await conn.execute(
+        "SELECT DISTINCT ON (b.debt_id) b.debt_id, b.id, b.name, b.amount, b.due_day, p.year, p.month "
+        "FROM bills b JOIN month_plans p ON p.id = b.plan_id AND p.deleted_at IS NULL "
+        "WHERE b.deleted_at IS NULL AND NOT b.is_paid AND b.is_included AND b.debt_id IS NOT NULL "
+        "ORDER BY b.debt_id, p.year, p.month, b.due_day, b.id"
+    )
+    next_bill = {r["debt_id"]: r for r in await cur.fetchall()}
+    out, total = [], 0
+    for row in debts:
+        row["balance"] = max(row["amount"] - row["paid_total"], 0)
+        nb = next_bill.get(row["id"])
+        row["next_unpaid_bill"] = None if nb is None else {
+            "id": nb["id"], "name": nb["name"], "amount": nb["amount"], "due_day": nb["due_day"],
+            "plan": {"year": nb["year"], "month": nb["month"]},
+        }
+        if args.get("open_only") and row["balance"] == 0:
+            continue
+        total += row["balance"]
+        out.append(row)
+    return {"debts": out, "balance_total": total}
+
+
+async def get_category_limits(conn, settings, args):
+    if ("year" in args) != ("month" in args):
+        raise ToolError("Give both 'year' and 'month', or neither.")
+    if "year" in args:
+        plan = await sync.plan_by_month(conn, args["year"], args["month"])
+    else:
+        plan = await sync.plan_for_date(conn, datetime.now(settings.timezone).date())
+    cur = await conn.execute("SELECT tag, amount FROM category_limits WHERE deleted_at IS NULL")
+    limits = {r["tag"]: r["amount"] for r in await cur.fetchall()}
+    spent = {}
+    if plan is not None:
+        cur = await conn.execute(
+            "SELECT tag, SUM(amount) AS total FROM expenses WHERE plan_id = %s AND deleted_at IS NULL GROUP BY tag",
+            (plan["id"],),
+        )
+        spent = {r["tag"]: r["total"] for r in await cur.fetchall()}
+    rows = []
+    for tag in v.EXPENSE_TAGS:
+        limit, used = limits.get(tag), spent.get(tag, 0)
+        rows.append({
+            "tag": tag, "limit": limit, "spent": used,
+            "remaining": None if limit is None else limit - used,
+            "over": limit is not None and used > limit,
+        })
+    return {"plan": None if plan is None else {"year": plan["year"], "month": plan["month"]}, "limits": rows}
+
+
 # ---- write tools -----------------------------------------------------------------
 
 def _now_ms() -> datetime:
@@ -369,6 +456,29 @@ TOOLS: tuple[Tool, ...] = (
         "get_insights",
         "The Insights numbers from the latest synced snapshot, or raw tag totals if none yet.",
         _YM, ("year", "month"), get_insights,
+    ),
+    Tool(
+        "list_months",
+        "The plan months that exist (newest first), so year/month arguments to other tools can be chosen.",
+        {}, (), list_months,
+    ),
+    Tool(
+        "list_loans",
+        "Money lent to people: amount, repaid so far, remaining, due date and whether it is late. "
+        "open_only hides repaid and written-off loans.",
+        {"open_only": {"type": "boolean"}}, (), list_loans,
+    ),
+    Tool(
+        "list_debts",
+        "Debts the user owes: amount, balance left, monthly payment, due day and the next unpaid reserved bill. "
+        "open_only hides cleared debts.",
+        {"open_only": {"type": "boolean"}}, (), list_debts,
+    ),
+    Tool(
+        "get_category_limits",
+        "Each spending category's limit and how much is spent against it, for the current month "
+        "or the given year and month.",
+        _YM, (), get_category_limits,
     ),
     Tool(
         "add_expense",

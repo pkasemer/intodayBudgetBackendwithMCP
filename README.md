@@ -65,7 +65,7 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 | `docker-compose.test.yml` | Test overlay (no published ports) + `tests` runner |
 | `api/app/sync.py` | LWW apply, push, pull, full snapshot, erase |
 | `api/app/validation.py` | Record validation shared by push and MCP writes |
-| `api/app/mcp.py`, `tools.py` | MCP JSON-RPC server and the ten tools |
+| `api/app/mcp.py`, `tools.py` | MCP JSON-RPC server and the fourteen tools |
 | `api/app/guards.py` | Bearer auth + Redis rate limiting |
 | `api/app/dashboard.py` | The month-in-full payload behind `GET /v1/dashboard` |
 | `api/app/export.py` | CSV / zip export and the monthly PDF report (`GET /v1/export/*`; PDF via `fpdf2`) |
@@ -73,7 +73,7 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 | `api/app/metrics.py` | Usage counters and activity events (batched, flushed to Postgres) and the numbers behind `GET /v1/stats` |
 | `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests; the landing page plus, after the token is accepted, the dashboard view fed by `GET /v1/dashboard` and `GET /v1/stats`) |
 | `api/migrations/` | Versioned SQL |
-| `api/tests/` | 111 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
+| `api/tests/` | 116 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
 | `scripts/` | `dev.sh`, `acceptance.sh`, `backup.sh`, `restore-check.sh`, `live_check.py` |
 | `deploy/` | `intoday.pkasemer.com.conf` (HTTP-only nginx block), `install-nginx.sh` (installs it + certbot), `enable-homepage.sh` (routes `/` to the home page) |
 | `.env.example` | Variable names only; `.env` and `.env.dev` are git-ignored |
@@ -305,8 +305,9 @@ IDs; notifications get 202. Implements `initialize` (negotiates 2025-06-18 / 202
 `tools/list`, `tools/call`, `ping` only. `GET /v1/mcp` returns `{"tools":[…]}`. Tool failures come back as
 `isError: true` results; results carry both text content and `structuredContent`.
 
-**Ten tools** (the spec's §14 says "seven" but §8 lists seven read + three write; all ten are exposed). There is
-deliberately no SQL or schema tool.
+**Fourteen tools**: eleven read, three write. v0.3 had ten (the spec's §14 says "seven" but §8 lists seven read +
+three write); `list_months` and the three v0.4 read tools (`list_loans`, `list_debts`, `get_category_limits`) were
+added later. There is deliberately no SQL or schema tool.
 
 | Tool | Input | Notes |
 |---|---|---|
@@ -317,6 +318,10 @@ deliberately no SQL or schema tool.
 | `list_income_events` | `year, month` | |
 | `list_goals` | — | Per goal: `allocated_total`, `income_to_savings_received` (received income only), `locked_total` = sum |
 | `get_insights` | `year, month` | Latest `insights` snapshot, else raw `tag_totals` |
+| `list_months` | — | The plan months that exist, newest first, with `plan_state` (so a client can choose `year`/`month`) |
+| `list_loans` | `open_only?` | Money lent: `repaid_total`, `remaining` (floored at 0), `status` (`open`/`repaid`/`written_off`), `late` (open, something owed, `due_on` before today); plus `owed_total` (open loans) and `late_count`. `open_only` hides repaid and written-off |
+| `list_debts` | `open_only?` | Per debt: `paid_total` (paid included bills that name it + extra debt payments, as in the PDF), `balance` (floored at 0), `monthly_payment`, `due_day`, `next_unpaid_bill` (earliest unpaid, included bill naming it, with its plan month; else `null`); plus `balance_total`. `open_only` hides cleared debts |
+| `get_category_limits` | `year?, month?` (both or neither) | All six tags with `limit` (null if none), `spent`, `remaining` (negative when over) and `over`, for the current month or the one given; `plan:null` and zero spend if the month has no plan |
 | `add_expense` | `amount, tag, date, note?` | **Write.** Plan = the one whose calendar month holds `date`; `device_id:"mcp"`; returns row + `device_sync_pending:true` |
 | `mark_bill_paid` | `bill_id` | **Write.** Only unpaid, live bills |
 | `mark_income_received` | `income_event_id` | **Write.** Only `expected` rows |
@@ -415,17 +420,17 @@ rebuild ≤ 1 h from the repo + latest dump.
 
 ```bash
 scripts/dev.sh up -d --wait db redis    # separate project "intoday-dev", throwaway token in .env.dev
-scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 111 tests (rebuild first: the image bakes in the code)
+scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 116 tests (rebuild first: the image bakes in the code)
 scripts/acceptance.sh                   # live checks: cold start, Redis outage, backup/restore, log hygiene
 scripts/dev.sh down -v
 ```
 
 The dev project publishes no ports at all and never touches production.
 
-- **111 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
+- **116 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
   retry (Redis and Postgres paths), LWW incl. tie-break, tombstones and purge with an injected clock, snapshot
   round trip, erasure, every validation rule, ownership-based income dates, expense month edges, `start_day`
-  ignored, all ten MCP tools, per-goal totals, usage counters and `/v1/stats` (incl. restart survival, erasure, the activity feed, rejection listing, response classes, capped auth bursts and alerts), Redis-down behaviour, rate limits, body cap, the home page and
+  ignored, all fourteen MCP tools, per-goal totals, usage counters and `/v1/stats` (incl. restart survival, erasure, the activity feed, rejection listing, response classes, capped auth bursts and alerts), Redis-down behaviour, rate limits, body cap, the home page and
   its headers, log hygiene, and the MCP-write-not-skipped cursor case. `test_v04.py` covers backend spec v0.4 acceptance items 15–20 and 22
   (item 21, an upgrade with a real phone, needs the app).
 - **Live acceptance run passed:** cold start from empty volumes, Redis stopped/started under live traffic,
@@ -448,7 +453,7 @@ The dev project publishes no ports at all and never touches production.
 ## 9. Decisions made on judgement (please confirm)
 
 1. **No Caddy** — nginx already owns 80/443; the api binds loopback `:8100` only.
-2. **Ten tools**, not seven (spec §14 vs §8).
+2. **Fourteen tools**: ten from v0.3 (spec §14 says seven, §8 lists ten) plus `list_months` and the three v0.4 read tools.
 3. **Cursor ordering** by server sequence instead of `(updated_at, id)` (spec §5.1 and §5.3 conflict): a
    client-set `updated_at` can go backwards and would make an `updated_at` cursor skip late-arriving rows.
 4. **Plan membership — resolved (27 Oct, product spec §5.10 rule 3):** by ownership; plans are calendar months;
@@ -464,9 +469,9 @@ The dev project publishes no ports at all and never touches production.
 
 ### Backend v0.4 decisions
 
-- **Capabilities returns 4 as soon as this code is deployed**, which is when everything in the v0.4 document except the
-  optional MCP tools is live. The three read tools (`list_loans`, `list_debts`, `get_category_limits`) are **not built**:
-  the spec makes them optional and subject to Hafiz's go-ahead.
+- **Capabilities returns 4**, and the three optional v0.4 MCP read tools (`list_loans`, `list_debts`, `get_category_limits`)
+  are built, now that the owner has asked for them. `list_months` is an addition of mine: without it a client has no way to
+  learn which `year`/`month` values exist. No new write tools.
 - **Missing key vs `null`** is implemented per column, not per table (see Schema 4): v0.3 columns keep their v0.3
   behaviour (an omitted nullable column is written as null).
 - **Lenient parents where the spec says "set null":** a loan may name a deleted plan, and a plan may name a deleted goal;

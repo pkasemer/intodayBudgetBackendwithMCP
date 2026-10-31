@@ -3,7 +3,8 @@ from datetime import datetime
 from . import helpers as h
 from .helpers import call_tool, rpc
 
-READ = {"get_today", "get_month_summary", "list_expenses", "list_bills", "list_income_events", "list_goals", "get_insights"}
+READ = {"get_today", "get_month_summary", "list_expenses", "list_bills", "list_income_events", "list_goals", "get_insights",
+        "list_months", "list_loans", "list_debts", "get_category_limits"}
 WRITE = {"add_expense", "mark_bill_paid", "mark_income_received"}
 
 
@@ -234,3 +235,94 @@ async def test_add_expense_needs_a_plan_for_that_calendar_month(client):
     await seed(client)  # October plan only
     assert (await call_tool(client, "add_expense", {"amount": 100, "tag": "food", "date": "2026-10-31"}))["isError"] is False
     assert (await call_tool(client, "add_expense", {"amount": 100, "tag": "food", "date": "2026-11-01"}))["isError"] is True
+
+
+# ---- v0.4 read tools -----------------------------------------------------------------
+
+async def test_list_months_newest_first(client):
+    assert (await call_tool(client, "list_months"))["structuredContent"]["months"] == []
+    await h.push(client, {"month_plans": [h.plan(2026, 9), h.plan(2026, 11, plan_state="closed"), h.plan(2026, 10)]})
+    months = (await call_tool(client, "list_months"))["structuredContent"]["months"]
+    assert [(m["year"], m["month"]) for m in months] == [(2026, 11), (2026, 10), (2026, 9)]
+    assert months[0]["plan_state"] == "closed"
+
+
+async def test_list_loans_remaining_status_and_late_flag(client):
+    paid_off, written_off = h.loan(person="Zed", due_on=None), h.loan(person="Wes", written_off=True, due_on="2026-01-09")
+    late, future = h.loan(person="Sam", amount=100000, due_on="2026-01-05"), h.loan(person="Ann", due_on="2099-01-01")
+    done = h.loan(person="Kim", repaid_on="2026-11-20", due_on="2026-01-02")
+    await h.push(client, {
+        "loans": [paid_off, written_off, late, future, done],
+        "loan_repayments": [h.repayment(late["id"], amount=40000), h.repayment(late["id"], amount=10000, date="2026-11-10"),
+                            h.repayment(future["id"], amount=1000, deleted_at="2026-11-11T00:00:00Z")],
+    })
+    out = (await call_tool(client, "list_loans"))["structuredContent"]
+    by_person = {l["person"]: l for l in out["loans"]}
+    assert [l["person"] for l in out["loans"]] == ["Kim", "Sam", "Wes", "Ann", "Zed"]  # due date order, undated last
+    assert by_person["Sam"]["repaid_total"] == 50000 and by_person["Sam"]["remaining"] == 50000
+    assert by_person["Sam"]["late"] is True and by_person["Sam"]["status"] == "open"
+    assert by_person["Ann"]["remaining"] == 100000 and by_person["Ann"]["late"] is False  # deleted repayment ignored
+    assert by_person["Kim"]["status"] == "repaid" and by_person["Kim"]["late"] is False
+    assert by_person["Wes"]["status"] == "written_off" and by_person["Wes"]["late"] is False
+    assert out["owed_total"] == 50000 + 100000 + 100000 and out["late_count"] == 1
+    only = (await call_tool(client, "list_loans", {"open_only": True}))["structuredContent"]
+    assert {l["person"] for l in only["loans"]} == {"Sam", "Ann", "Zed"}
+    assert (await call_tool(client, "list_loans", {"open_only": "yes"}))["isError"] is True
+
+
+async def test_list_debts_balance_and_next_unpaid_bill(client):
+    p10, p11 = h.plan(2026, 10), h.plan(2026, 11)
+    bank, mum, done = h.debt(name="Stanbic", amount=1000000), h.debt(name="Mum", kind="person", amount=200000), h.debt(name="Old", amount=50000, monthly_payment=0)
+    await h.push(client, {
+        "debts": [bank, mum, done], "month_plans": [p10, p11],
+        "bills": [
+            h.bill(p10["id"], name="Stanbic Oct", amount=150000, is_paid=True, debt_id=bank["id"]),
+            h.bill(p11["id"], name="Stanbic Nov", amount=150000, due_day=12, debt_id=bank["id"]),
+            h.bill(p11["id"], name="Stanbic Nov late fee", amount=5000, due_day=20, debt_id=bank["id"]),
+            h.bill(p11["id"], name="Skipped", amount=9999, is_paid=True, is_included=False, debt_id=bank["id"]),
+        ],
+        "debt_payments": [h.debt_payment(bank["id"], p10["id"], amount=50000), h.debt_payment(done["id"], p10["id"], amount=70000)],
+    })
+    out = (await call_tool(client, "list_debts"))["structuredContent"]
+    by_name = {d["name"]: d for d in out["debts"]}
+    assert [d["name"] for d in out["debts"]] == ["Mum", "Old", "Stanbic"]
+    assert by_name["Stanbic"]["paid_total"] == 200000 and by_name["Stanbic"]["balance"] == 800000
+    nxt = by_name["Stanbic"]["next_unpaid_bill"]
+    assert (nxt["name"], nxt["amount"], nxt["due_day"], nxt["plan"]) == ("Stanbic Nov", 150000, 12, {"year": 2026, "month": 11})
+    assert by_name["Mum"]["balance"] == 200000 and by_name["Mum"]["next_unpaid_bill"] is None
+    assert by_name["Old"]["balance"] == 0  # overpaid is floored, not negative
+    assert out["balance_total"] == 800000 + 200000
+    only = (await call_tool(client, "list_debts", {"open_only": True}))["structuredContent"]
+    assert [d["name"] for d in only["debts"]] == ["Mum", "Stanbic"] and only["balance_total"] == 1000000
+
+
+async def test_get_category_limits_spend_against_each_limit(client):
+    p = h.plan(2026, 10)
+    await h.push(client, {
+        "month_plans": [p],
+        "category_limits": [h.limit(tag="food", amount=300000), h.limit(tag="fun", amount=10000),
+                            h.limit(tag="shopping", amount=50000, deleted_at="2026-10-27T11:00:00Z")],
+        "expenses": [h.expense(p["id"], amount=310000), h.expense(p["id"], amount=4000, tag="fun"),
+                     h.expense(p["id"], amount=900, tag="other"), h.expense(p["id"], amount=70000, tag="shopping", deleted_at="2026-10-27T11:00:00Z")],
+    })
+    out = (await call_tool(client, "get_category_limits", {"year": 2026, "month": 10}))["structuredContent"]
+    assert out["plan"] == {"year": 2026, "month": 10}
+    rows = {r["tag"]: r for r in out["limits"]}
+    assert list(rows) == ["food", "transport", "dataAirtime", "fun", "shopping", "other"]
+    assert rows["food"] == {"tag": "food", "limit": 300000, "spent": 310000, "remaining": -10000, "over": True}
+    assert rows["fun"]["remaining"] == 6000 and rows["fun"]["over"] is False
+    assert rows["other"] == {"tag": "other", "limit": None, "spent": 900, "remaining": None, "over": False}
+    assert rows["shopping"]["limit"] is None and rows["shopping"]["spent"] == 0  # deleted limit and expense ignored
+    empty = (await call_tool(client, "get_category_limits", {"year": 2030, "month": 1}))["structuredContent"]
+    assert empty["plan"] is None and empty["limits"][0]["limit"] == 300000 and empty["limits"][0]["spent"] == 0
+    assert (await call_tool(client, "get_category_limits", {"year": 2026}))["isError"] is True
+
+
+async def test_get_category_limits_defaults_to_the_current_month(app, client):
+    today = datetime.now(app.state.settings.timezone).date()
+    p = h.plan(today.year, today.month)
+    await h.push(client, {"month_plans": [p], "category_limits": [h.limit(tag="food", amount=1000)],
+                          "expenses": [h.expense(p["id"], amount=400, date=today.isoformat())]})
+    out = (await call_tool(client, "get_category_limits"))["structuredContent"]
+    assert out["plan"] == {"year": today.year, "month": today.month}
+    assert out["limits"][0]["spent"] == 400 and out["limits"][0]["remaining"] == 600
