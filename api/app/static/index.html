@@ -6,46 +6,44 @@
 <title>InToday</title>
 <meta name="description" content="InToday — a quiet ledger for the day at hand.">
 <meta name="robots" content="noindex">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#16181a">
 <style>
   :root {
-    --paper: #f1e8d4;
-    --paper-edge: #e2d5b8;
-    --ink: #3a2e21;
-    --ink-faint: rgba(58, 46, 33, .28);
-    --rule: rgba(58, 46, 33, .16);
-    --card: rgba(255, 252, 244, .42);
-    --sanguine: #8c3b2a;
-    --olive: #5b6b36;
+    color-scheme: dark;
+    --bg: #16181a;
+    --bg-edge: #0f1011;
+    --card: #1e2124;
+    --field: #111314;
+    --ink: #e6e8e5;
+    --ink-faint: rgba(230, 232, 229, .3);
+    --rule: rgba(230, 232, 229, .11);
+    --muted: #868e93;
+    --red: #ef5b52;
+    --green: #43c383;
+    --red-bg: rgba(239, 91, 82, .13);
+    --green-bg: rgba(67, 195, 131, .13);
     --serif: "Cormorant Garamond", "EB Garamond", Garamond, "Palatino Linotype", "Book Antiqua", Georgia, serif;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --paper: #211c16;
-      --paper-edge: #17130f;
-      --ink: #dccfae;
-      --ink-faint: rgba(220, 207, 174, .26);
-      --rule: rgba(220, 207, 174, .15);
-      --card: rgba(255, 255, 255, .03);
-      --sanguine: #c76a52;
-      --olive: #9bb067;
-    }
   }
   * { box-sizing: border-box; }
   html { height: 100%; }
   [hidden] { display: none !important; }
+  ::selection { background: var(--green-bg); }
   body { margin: 0; min-height: 100%; color: var(--ink); font-family: var(--serif); -webkit-font-smoothing: antialiased;
-    background: radial-gradient(ellipse at 50% 42%, var(--paper) 0%, var(--paper) 45%, var(--paper-edge) 100%); }
+    background: radial-gradient(ellipse at 50% 38%, #212427 0%, var(--bg) 55%, var(--bg-edge) 100%); }
   button, input, select { font: inherit; color: inherit; }
   button { cursor: pointer; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 
   /* ---------- landing ---------- */
   #landing { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px 16px 20px; }
   main.hero { display: flex; flex-direction: column; align-items: center; text-align: center; }
   .hero svg { width: min(72vw, 400px, 52vh); height: auto; overflow: visible; }
-  .line { fill: none; stroke: var(--ink); stroke-width: 1.1; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .line { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .hero rect.line { stroke: var(--green); }
+  .hero circle.line { stroke: var(--red); }
   .guide { fill: none; stroke: var(--ink-faint); stroke-width: .8; vector-effect: non-scaling-stroke; }
-  .mark { fill: var(--sanguine); }
+  .mark { fill: var(--ink); }
   .draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw 2.6s cubic-bezier(.45, 0, .2, 1) forwards; }
   .draw.late { animation-delay: .7s; }
   .fade { opacity: 0; animation: fade 1.6s ease 1.6s forwards; }
@@ -54,104 +52,115 @@
   h1 { margin: 2.2rem 0 .45rem; font-weight: 400; font-size: clamp(2rem, 6vw, 2.8rem); letter-spacing: .32em; text-indent: .32em; text-transform: uppercase; }
   .hero p { margin: 0; font-style: italic; font-size: clamp(1.05rem, 3.2vw, 1.25rem); opacity: .82; }
   footer { margin-top: auto; padding-top: 28px; width: min(92vw, 560px); display: flex; justify-content: space-between; align-items: baseline;
-    font-size: .85rem; letter-spacing: .08em; opacity: .7; }
+    font-size: .85rem; letter-spacing: .08em; opacity: .8; }
   .gate { margin-top: 2.4rem; width: min(92vw, 600px); text-align: center; }
-  .gate button, .gate input { background: none; border: 0; border-bottom: 1px solid var(--ink-faint); padding: .3em .1em; border-radius: 0; }
-  .gate button { font-style: italic; border-bottom-color: transparent; text-decoration: underline; text-decoration-color: var(--ink-faint); text-underline-offset: .25em; }
-  .gate button:hover, .gate button:focus-visible { text-decoration-color: var(--sanguine); outline: none; }
-  .gate input { width: min(60vw, 20rem); text-align: center; letter-spacing: .04em; }
-  .gate input:focus { outline: none; border-bottom-color: var(--sanguine); }
-  .gate form { display: flex; gap: .9rem; justify-content: center; align-items: baseline; flex-wrap: wrap; }
-  .note { min-height: 1.4em; margin-top: .5rem; font-size: .9rem; font-style: italic; opacity: .75; }
+  .gate button { background: var(--green-bg); border: 1px solid var(--green); color: var(--green); border-radius: 999px; padding: .4em 1.6em; font-style: italic; letter-spacing: .04em; }
+  .gate button:hover, .gate button:focus-visible { background: var(--green); color: var(--bg-edge); }
+  .gate input { background: var(--field); border: 1px solid var(--ink-faint); border-radius: 6px; padding: .45em .9em; width: min(60vw, 20rem); text-align: center; letter-spacing: .04em; }
+  .gate input:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px var(--green-bg); }
+  .gate form { display: flex; gap: .9rem; justify-content: center; align-items: center; flex-wrap: wrap; }
+  .note { min-height: 1.4em; margin-top: .6rem; font-size: .9rem; font-style: italic; color: var(--red); }
   .status::before { content: ""; display: inline-block; width: .5em; height: .5em; margin-right: .6em; border-radius: 50%; background: var(--ink-faint); vertical-align: .08em; }
-  .status.up::before { background: var(--sanguine); }
+  .status.up::before { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status.down::before { background: var(--red); box-shadow: 0 0 6px var(--red); }
   .mirror { display: inline-block; transform: scaleX(-1); font-style: italic; }
   @media (prefers-reduced-motion: reduce) { .draw, .fade { animation: none; stroke-dashoffset: 0; opacity: 1; } }
 
   /* ---------- dashboard shell ---------- */
-  body.dash { background: var(--paper); }
+  body.dash { background: var(--bg); }
   #dash { min-height: 100vh; }
-  .bar { position: sticky; top: 0; z-index: 5; background: var(--paper); border-bottom: 1px solid var(--rule);
+  .bar { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--rule);
     display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; align-items: center; padding: .6rem 20px; }
   .brand { font-size: 1.15rem; letter-spacing: .3em; text-transform: uppercase; display: flex; align-items: center; gap: .6rem; margin-right: .4rem; }
   .brand svg { width: 22px; height: 22px; }
   nav#tabs { display: flex; gap: .2rem; overflow-x: auto; flex: 1 1 auto; scrollbar-width: none; }
   nav#tabs::-webkit-scrollbar { display: none; }
-  nav#tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: .35rem .8rem; font-style: italic; font-size: 1.05rem; white-space: nowrap; opacity: .7; }
-  nav#tabs button[aria-selected="true"] { border-bottom-color: var(--sanguine); opacity: 1; }
-  nav#tabs button:hover { opacity: 1; }
+  nav#tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: .35rem .8rem; font-style: italic; font-size: 1.05rem; white-space: nowrap; color: var(--muted); }
+  nav#tabs button[aria-selected="true"] { border-bottom-color: var(--green); color: var(--green); }
+  nav#tabs button:hover { color: var(--ink); }
+  nav#tabs button[aria-selected="true"]:hover { color: var(--green); }
   .ctl { display: flex; align-items: center; gap: .5rem; font-size: .95rem; }
-  .ctl select { background: none; border: 0; border-bottom: 1px solid var(--ink-faint); padding: .15rem .2rem; border-radius: 0; }
-  .ctl select option { background: var(--paper); color: var(--ink); }
-  .ctl button { background: none; border: 0; padding: .2rem .45rem; font-size: 1.1rem; opacity: .7; }
-  .ctl button:hover:not(:disabled) { opacity: 1; }
-  .ctl button:disabled { opacity: .25; cursor: default; }
-  .ctl .lockbtn { font-size: .9rem; font-style: italic; text-decoration: underline; text-decoration-color: var(--ink-faint); text-underline-offset: .25em; }
-  #pulse { font-size: .85rem; font-style: italic; opacity: .75; white-space: nowrap; }
-  #pulse.stale { color: var(--sanguine); opacity: 1; }
-  .banner { padding: .4rem 20px; font-size: .95rem; font-style: italic; color: var(--sanguine); border-bottom: 1px solid var(--rule); cursor: pointer; }
+  .ctl select { background: var(--field); border: 1px solid var(--rule); border-radius: 6px; padding: .2rem .5rem; }
+  .ctl select:hover { border-color: var(--ink-faint); }
+  .ctl select option { background: var(--card); color: var(--ink); }
+  .ctl button { background: none; border: 1px solid var(--rule); border-radius: 6px; padding: .1rem .55rem; font-size: 1.1rem; color: var(--muted); }
+  .ctl button:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+  .ctl button:disabled { opacity: .3; cursor: default; }
+  .ctl .lockbtn { font-size: .9rem; font-style: italic; border: 1px solid var(--red); color: var(--red); border-radius: 999px; padding: .15rem .9rem; }
+  .ctl .lockbtn:hover:not(:disabled) { background: var(--red); border-color: var(--red); color: var(--bg-edge); }
+  #pulse { font-size: .85rem; font-style: italic; color: var(--muted); white-space: nowrap; }
+  #pulse::before { content: ""; display: inline-block; width: .5em; height: .5em; margin-right: .5em; border-radius: 50%; background: var(--green); vertical-align: .08em; }
+  #pulse:empty::before { display: none; }
+  #pulse.stale { color: var(--red); }
+  #pulse.stale::before { background: var(--red); }
+  .banner { padding: .45rem 20px; font-size: .95rem; font-style: italic; color: var(--red); background: var(--red-bg); border-bottom: 1px solid var(--red); cursor: pointer; }
   #view { max-width: 1280px; margin: 0 auto; padding: 18px 20px 48px; }
   .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
-  .card { grid-column: span 4; background: var(--card); border: 1px solid var(--rule); padding: 12px 16px 14px; min-width: 0; }
+  .card { grid-column: span 4; background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px 14px; min-width: 0; }
   .card.w4 { grid-column: span 4; } .card.w5 { grid-column: span 5; } .card.w6 { grid-column: span 6; }
   .card.w7 { grid-column: span 7; } .card.w8 { grid-column: span 8; } .card.w12 { grid-column: 1 / -1; }
   .card h3 { margin: 0 0 .6rem; font-weight: 400; font-style: italic; font-size: 1.05rem; letter-spacing: .03em; display: flex; justify-content: space-between; align-items: baseline; gap: .6rem; }
-  .card h3 small { font-size: .8rem; opacity: .6; font-style: italic; }
+  .card h3 small { font-size: .8rem; color: var(--muted); font-style: italic; }
   .card.kpi { grid-column: span 2; padding: 10px 14px 12px; }
-  .kpi .k { font-size: .82rem; font-style: italic; opacity: .7; }
+  .kpi .k { font-size: .82rem; font-style: italic; color: var(--muted); }
   .kpi .v { font-size: 1.75rem; line-height: 1.15; font-variant-numeric: oldstyle-nums; margin-top: .1rem; }
   .kpi .v small { font-size: .7rem; opacity: .55; margin-right: .25em; letter-spacing: .06em; }
-  .kpi .s { font-size: .8rem; opacity: .65; margin-top: .15rem; font-variant-numeric: oldstyle-nums; }
+  .kpi .s { font-size: .8rem; color: var(--muted); margin-top: .15rem; font-variant-numeric: oldstyle-nums; }
   @media (max-width: 1000px) { .card, .card.w4, .card.w5, .card.w6, .card.w7, .card.w8 { grid-column: 1 / -1; } .card.kpi { grid-column: span 4; } }
   @media (max-width: 560px) { .card.kpi { grid-column: span 6; } .bar { padding: .5rem 12px; } #view { padding: 12px 12px 40px; } .brand span { display: none; } }
 
   /* ---------- parts ---------- */
   .big { font-size: 2.6rem; line-height: 1.05; font-variant-numeric: oldstyle-nums; }
   .big small { font-size: .9rem; opacity: .6; margin-right: .3em; letter-spacing: .06em; }
-  .dim { opacity: .6; } .bad { color: var(--sanguine); } .good { color: var(--olive); }
+  .dim { color: var(--muted); } .bad { color: var(--red); } .good { color: var(--green); }
   .plain { margin: 0 0 .3rem; font-size: .95rem; line-height: 1.55; opacity: .88; font-variant-numeric: oldstyle-nums; }
-  .empty { margin: 0; font-style: italic; opacity: .6; font-size: .95rem; }
+  .empty { margin: 0; font-style: italic; color: var(--muted); font-size: .95rem; }
   .kv { display: grid; grid-template-columns: 1fr auto; gap: .2rem 1rem; margin: .6rem 0 0; font-size: .95rem; font-variant-numeric: oldstyle-nums; }
-  .kv dt { opacity: .7; font-style: italic; } .kv dd { margin: 0; text-align: right; }
+  .kv dt { color: var(--muted); font-style: italic; } .kv dd { margin: 0; text-align: right; }
   table.t { width: 100%; border-collapse: collapse; font-size: .93rem; font-variant-numeric: oldstyle-nums; }
-  table.t th { text-align: left; font-weight: 400; font-style: italic; opacity: .65; font-size: .8rem; padding: 0 .5rem .25rem 0; }
+  table.t th { text-align: left; font-weight: 400; font-style: italic; color: var(--muted); font-size: .8rem; padding: 0 .5rem .25rem 0; }
   table.t td { padding: .22rem .5rem .22rem 0; border-top: 1px solid var(--rule); vertical-align: baseline; }
+  table.t tbody tr:hover td { background: rgba(255, 255, 255, .025); }
   table.t .n { text-align: right; padding-right: 0; padding-left: .5rem; }
-  table.t td.dim { opacity: .55; }
-  .pill { display: inline-block; border: 1px solid var(--ink-faint); border-radius: 999px; padding: 0 .55em; font-size: .78rem; font-style: italic; }
-  .pill.good { border-color: var(--olive); } .pill.bad { border-color: var(--sanguine); }
+  table.t td.dim { color: var(--muted); }
+  .pill { display: inline-block; border: 1px solid var(--ink-faint); border-radius: 999px; padding: 0 .6em; font-size: .78rem; font-style: italic; }
+  .pill.good { border-color: var(--green); background: var(--green-bg); } .pill.bad { border-color: var(--red); background: var(--red-bg); }
   .hb { display: grid; grid-template-columns: 6.6rem 1fr 6.4rem; gap: .6rem; align-items: center; padding: .24rem 0; font-size: .93rem; font-variant-numeric: oldstyle-nums; }
   .hb .val { text-align: right; }
-  .track { position: relative; height: .55rem; background: var(--rule); }
-  .fill { height: 100%; background: var(--ink); opacity: .75; }
-  .fill.over { background: var(--sanguine); opacity: 1; } .fill.olive { background: var(--olive); opacity: .9; }
-  .tick { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--sanguine); }
+  .track { position: relative; height: .55rem; background: var(--rule); border-radius: 3px; }
+  .fill { height: 100%; background: var(--muted); border-radius: 3px; }
+  .fill.over { background: var(--red); } .fill.green { background: var(--green); }
+  .tick { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); opacity: .8; }
   .chart { width: 100%; height: auto; display: block; overflow: visible; }
-  .chart text { fill: var(--ink); font-size: 10px; font-style: italic; opacity: .65; font-family: var(--serif); }
+  .chart text { fill: var(--muted); font-size: 10px; font-style: italic; font-family: var(--serif); }
   .chart .axis { stroke: var(--ink-faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
-  .chart .c-ink { fill: var(--ink); opacity: .7; } .chart .c-red { fill: var(--sanguine); } .chart .c-olive { fill: var(--olive); } .chart .c-faint { fill: var(--ink-faint); }
-  .key { margin-top: .5rem; font-size: .82rem; font-style: italic; opacity: .75; display: flex; flex-wrap: wrap; gap: .3rem 1rem; }
-  .key i { display: inline-block; width: .7em; height: .7em; margin-right: .35em; vertical-align: -.05em; }
-  .key i.c-ink { background: var(--ink); opacity: .7; } .key i.c-red { background: var(--sanguine); } .key i.c-olive { background: var(--olive); } .key i.c-faint { background: var(--ink-faint); }
-  .more { margin-top: .5rem; background: none; border: 0; padding: 0; font-style: italic; font-size: .9rem; text-decoration: underline; text-decoration-color: var(--ink-faint); text-underline-offset: .25em; }
+  .chart .c-ink { fill: var(--muted); opacity: .75; } .chart .c-red { fill: var(--red); } .chart .c-green { fill: var(--green); } .chart .c-faint { fill: var(--ink-faint); }
+  .key { margin-top: .5rem; font-size: .82rem; font-style: italic; color: var(--muted); display: flex; flex-wrap: wrap; gap: .3rem 1rem; }
+  .key i { display: inline-block; width: .7em; height: .7em; margin-right: .35em; vertical-align: -.05em; border-radius: 2px; }
+  .key i.c-ink { background: var(--muted); opacity: .75; } .key i.c-red { background: var(--red); } .key i.c-green { background: var(--green); } .key i.c-faint { background: var(--ink-faint); }
+  .more { margin-top: .5rem; background: none; border: 0; padding: 0; font-style: italic; font-size: .9rem; color: var(--green); text-decoration: underline; text-decoration-color: var(--green-bg); text-underline-offset: .25em; }
+  .more:hover { text-decoration-color: var(--green); }
   .chips { display: flex; flex-wrap: wrap; gap: .3rem .5rem; margin-bottom: .6rem; }
-  .chips button { background: none; border: 1px solid var(--ink-faint); border-radius: 999px; padding: 0 .7em; font-size: .85rem; font-style: italic; opacity: .75; }
-  .chips button[aria-pressed="true"] { border-color: var(--sanguine); opacity: 1; }
+  .chips button { background: none; border: 1px solid var(--rule); border-radius: 999px; padding: 0 .75em; font-size: .85rem; font-style: italic; color: var(--muted); }
+  .chips button:hover { border-color: var(--ink-faint); color: var(--ink); }
+  .chips button[aria-pressed="true"] { border-color: var(--green); background: var(--green-bg); color: var(--green); }
   .feed { list-style: none; margin: 0; padding: 0; font-size: .93rem; font-variant-numeric: oldstyle-nums; }
   .feed li { display: grid; grid-template-columns: 5.2rem 5.2rem 1fr; gap: .1rem .7rem; padding: .3rem 0; border-top: 1px solid var(--rule); line-height: 1.4; }
   .feed.two li { grid-template-columns: 5rem 1fr; }
-  .feed li.bad .sum { color: var(--sanguine); } .feed .when { opacity: .6; font-size: .85rem; } .feed .kind { font-style: italic; opacity: .8; }
-  .feed small { display: block; opacity: .65; font-size: .82rem; }
+  .feed li.bad .sum { color: var(--red); } .feed .when { color: var(--muted); font-size: .85rem; } .feed .kind { font-style: italic; color: var(--green); }
+  .feed li.bad .kind { color: var(--red); }
+  .feed small { display: block; color: var(--muted); font-size: .82rem; }
   .feed li.solo { display: block; }
   @media (max-width: 560px) { .feed li { grid-template-columns: 4.4rem 1fr; } .feed .kind { grid-column: 2; } .feed .sum { grid-column: 1 / -1; } .feed.two li .sum { grid-column: 2; } }
   .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: .78em; }
-  .export { display: flex; flex-wrap: wrap; gap: .7rem 1.4rem; align-items: baseline; font-size: .95rem; }
-  .export label { font-style: italic; opacity: .85; }
-  .export select { background: none; border: 0; border-bottom: 1px solid var(--ink-faint); padding: .2em .1em; border-radius: 0; max-width: 12rem; }
-  .export select option { background: var(--paper); color: var(--ink); }
-  .export .actions { display: flex; gap: 1.2rem; flex-wrap: wrap; }
-  .export button { background: none; border: 0; padding: .2em 0; font-style: italic; text-decoration: underline; text-decoration-color: var(--ink-faint); text-underline-offset: .25em; }
-  .export button:hover { text-decoration-color: var(--sanguine); }
+  .export { display: flex; flex-wrap: wrap; gap: .7rem 1.4rem; align-items: center; font-size: .95rem; }
+  .export label { font-style: italic; color: var(--muted); }
+  .export select { background: var(--field); border: 1px solid var(--rule); border-radius: 6px; padding: .2em .5em; max-width: 12rem; }
+  .export select option { background: var(--card); color: var(--ink); }
+  .export .actions { display: flex; gap: .7rem; flex-wrap: wrap; }
+  .export button { background: var(--green-bg); border: 1px solid var(--green); color: var(--green); border-radius: 999px; padding: .2em 1.2em; font-style: italic; }
+  .export button:hover:not(:disabled) { background: var(--green); color: var(--bg-edge); }
+  .export button:disabled { opacity: .5; cursor: default; }
   .hint { margin-top: .6rem; }
 </style>
 </head>
@@ -192,7 +201,7 @@
 <div id="dash" hidden>
   <header class="bar">
     <div class="brand">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="12" cy="11.5" r="8.5" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="12" cy="11.5" r="1.4" fill="var(--sanguine)"/></svg>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="12" cy="11.5" r="8.5" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="12" cy="11.5" r="1.4" fill="var(--green)"/></svg>
       <span>InToday</span>
     </div>
     <nav id="tabs" role="tablist" aria-label="Views"></nav>
@@ -317,7 +326,7 @@
       return svg;
     }
     function trendChart(trend) {
-      const W = 600, H = 170, base = 140, top = 10, series = [["income", "c-olive"], ["spent", "c-red"], ["bills_paid", "c-faint"]];
+      const W = 600, H = 170, base = 140, top = 10, series = [["income", "c-green"], ["spent", "c-red"], ["bills_paid", "c-faint"]];
       const max = Math.max.apply(null, trend.map((t) => Math.max(t.income, t.spent, t.bills_paid)).concat([1]));
       const svg = sv("svg", { "class": "chart", viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Income, spending and bills by month" });
       svg.appendChild(sv("line", { "class": "axis", x1: 0, x2: W, y1: base, y2: base }));
@@ -342,7 +351,7 @@
         const a = (x.api / max) * (base - top), m = (x.mcp / max) * (base - top), left = i * slot + (slot - bw) / 2;
         const g = sv("g", {}, [sv("title", {}, x.day + " · " + x.api + " API calls, " + x.mcp + " MCP")]);
         g.appendChild(sv("rect", { "class": "c-faint", x: left, y: base - a, width: bw, height: Math.max(a, x.api ? 1 : 0) }));
-        if (x.mcp) g.appendChild(sv("rect", { "class": "c-red", x: left, y: base - m, width: bw, height: Math.max(m, 1) }));
+        if (x.mcp) g.appendChild(sv("rect", { "class": "c-green", x: left, y: base - m, width: bw, height: Math.max(m, 1) }));
         svg.appendChild(g);
         if (i === 0 || i === days.length - 1 || i === Math.floor(days.length / 2)) svg.appendChild(sv("text", { x: left + bw / 2, y: 114, "text-anchor": "middle" }, x.day.slice(5)));
       });
@@ -378,7 +387,7 @@
     }
     function categoryCard(cls) {
       const max = Math.max.apply(null, D.by_tag.map((x) => Math.max(x.spent, x.limit || 0)).concat([1]));
-      const bars = D.by_tag.filter((x) => x.spent || x.limit).map((x) => hbar(TAG_NAMES[x.tag] || x.tag, x.spent, max, num(x.spent) + (x.limit ? " / " + num(x.limit) : ""), x.limit && x.spent > x.limit ? "over" : "", x.limit));
+      const bars = D.by_tag.filter((x) => x.spent || x.limit).map((x) => hbar(TAG_NAMES[x.tag] || x.tag, x.spent, max, num(x.spent) + (x.limit ? " / " + num(x.limit) : ""), x.limit ? (x.spent > x.limit ? "over" : "green") : "", x.limit));
       return card("Where it went", "spent / limit", cls, bars.length ? bars : [empty("No spending recorded.")]);
     }
     function overview() {
@@ -416,16 +425,16 @@
       const g = h("div", "grid");
       g.appendChild(card("Income", D.income.length + " this month", "w6", [D.income.length ? table(["Date", "Label", "Status", "Goes to", "Amount"], D.income.map((i) => [day(i.date), i.label, { node: pill(i.status, i.status === "received" ? "good" : "") }, { text: i.destination === "lockedSavings" ? "savings" : "spendable", dim: true }, "UGX " + num(i.amount)]), 4) : empty("No income recorded.")]));
       g.appendChild(card("Bills", "UGX " + num(D.totals.bills_paid) + " of " + num(D.totals.bills_reserved) + " paid", "w6", [D.bills.length ? table(["Due", "Bill", "State", "Amount"], D.bills.map((b) => [{ text: "day " + b.due_day, dim: true }, b.name, { node: pill(b.is_paid ? "paid" : b.is_included ? "unpaid" : "not this month", b.is_paid ? "good" : b.is_included ? "bad" : "") }, "UGX " + num(b.amount)]), 3) : empty("No bills.")]));
-      g.appendChild(card("Savings goals", "all time", "w4", D.goals.length ? D.goals.map((x) => hbar(x.name, x.locked_total, x.target_amount || x.locked_total, num(x.locked_total) + (x.target_amount ? " / " + num(x.target_amount) : ""), "olive")) : [empty("No goals yet.")]));
+      g.appendChild(card("Savings goals", "all time", "w4", D.goals.length ? D.goals.map((x) => hbar(x.name, x.locked_total, x.target_amount || x.locked_total, num(x.locked_total) + (x.target_amount ? " / " + num(x.target_amount) : ""), "green")) : [empty("No goals yet.")]));
       g.appendChild(card("Money lent", "still owed to you", "w4", [D.loans.length ? table(["Person", "Due", "Owed"], D.loans.map((l) => [l.person, { node: h("span", l.late ? "bad" : "dim", l.due_on ? day(l.due_on) + (l.late ? " (late)" : "") : "-") }, "UGX " + num(l.remaining)]), 2) : empty("Nobody owes you.")]));
       g.appendChild(card("Debts", "balance owed by you", "w4", D.debts.length
-        ? D.debts.map((d) => hbar(d.name, Math.max(d.amount - Math.max(d.balance, 0), 0), d.amount, num(Math.max(d.balance, 0)) + " left", "olive")).concat([h("p", "plain dim hint", "Bar = paid off so far.")])
+        ? D.debts.map((d) => hbar(d.name, Math.max(d.amount - Math.max(d.balance, 0), 0), d.amount, num(Math.max(d.balance, 0)) + " left", "green")).concat([h("p", "plain dim hint", "Bar = paid off so far.")])
         : [empty("No debts.")]));
       return g;
     }
     function reports() {
       const g = h("div", "grid"), t = D.totals;
-      g.appendChild(card("Month by month", "last " + D.trend.length, "w7", D.trend.length ? [trendChart(D.trend), legend([["income received", "c-olive"], ["spent", "c-red"], ["bills paid", "c-faint"]])] : [empty("No months yet.")]));
+      g.appendChild(card("Month by month", "last " + D.trend.length, "w7", D.trend.length ? [trendChart(D.trend), legend([["income received", "c-green"], ["spent", "c-red"], ["bills paid", "c-faint"]])] : [empty("No months yet.")]));
       g.appendChild(card("This month", monthName(D.month), "w5", [kv([
         ["Income received", "UGX " + num(t.income_received)], ["Income expected", "UGX " + num(t.income_expected)], ["Bills reserved", "UGX " + num(t.bills_reserved)],
         ["Spent", "UGX " + num(t.spent)], ["Saved", "UGX " + num(t.saved)], ["Extra debt payments", "UGX " + num(t.extra_debt_payments)]])]));
@@ -502,7 +511,7 @@
       g.appendChild(kpiText("Last synced", ls.at ? ago(ls.at) : "never", ls.at ? ls.kind + " · " + when(ls.at) : "waiting for the app"));
       g.appendChild(kpiText("Up for", dur(hh.uptime_seconds), "schema " + hh.schema_version + " · " + (hh.migration || "").split("_")[0]));
       g.appendChild(card("Needs attention", "database " + hh.database + " · redis " + hh.redis, "w4", S.alerts.length ? S.alerts.map((a) => h("p", "plain " + (a.level === "bad" ? "bad" : ""), "❧ " + a.text)) : [h("p", "plain dim", "All quiet. Nothing needs attention.")]));
-      g.appendChild(card("The last fourteen days", "API calls, MCP overlaid", "w8", [callsChart(S.days), legend([["API calls", "c-faint"], ["of which MCP", "c-red"]])]));
+      g.appendChild(card("The last fourteen days", "API calls, MCP overlaid", "w8", [callsChart(S.days), legend([["API calls", "c-faint"], ["of which MCP", "c-green"]])]));
       const rows = [["ok", "Answered"], ["unauthorized", "Turned away"], ["rate_limited", "Rate limited"], ["client_error", "Bad requests"], ["server_error", "Server errors"]]
         .map((p) => [p[1], { text: num(r.today[p[0]]), dim: !r.today[p[0]] }, { text: num(r.window[p[0]]), dim: true }]);
       const lat = Object.keys(S.latency).map((k) => [k, ms(S.latency[k].p50), ms(S.latency[k].p95)]);
@@ -597,8 +606,8 @@
     fetch("/healthz", { cache: "no-store" }).then((r) => r.json()).then((j) => {
       const ok = j.status === "ok" || j.status === "degraded";
       $("status").textContent = ok ? "In operation" : "Resting";
-      if (ok) $("status").className = "status up";
-    }).catch(() => { $("status").textContent = "Unreachable"; });
+      $("status").className = ok ? "status up" : "status down";
+    }).catch(() => { $("status").textContent = "Unreachable"; $("status").className = "status down"; });
 
     $("open").onclick = () => { $("open").hidden = true; $("unlock").hidden = false; $("token").focus(); };
     $("unlock").onsubmit = (e) => {
