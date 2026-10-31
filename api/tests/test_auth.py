@@ -71,3 +71,12 @@ async def test_home_page_is_public_static_and_locked_down(anon):
     assert r.headers["x-content-type-options"] == "nosniff"
     # No third-party anything: no external URLs in the page.
     assert "http://" not in r.text.replace("http://www.w3.org", "") and "https://" not in r.text
+
+
+async def test_home_page_carries_its_own_fonts_and_allows_nothing_else(anon):
+    r = await anon.get("/")
+    csp = r.headers["content-security-policy"]
+    assert "font-src data:" in csp and "font-src data: http" not in csp
+    assert r.text.count("@font-face") == 3 and "data:font/woff2;base64," in r.text
+    assert "/*FONTS*/" not in r.text and '"Source Serif 4"' in r.text
+    assert "url(http" not in r.text and "@import" not in r.text

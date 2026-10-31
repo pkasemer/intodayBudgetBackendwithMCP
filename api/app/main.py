@@ -26,13 +26,27 @@ from .purge import purge
 IDEM_TTL_SECONDS = 24 * 3600
 USAGE_FLUSH_SECONDS = 30
 
-_INDEX_HTML = (Path(__file__).parent / "static" / "index.html").read_text()
+_STATIC = Path(__file__).parent / "static"
+# Source Serif 4 (SIL OFL, see static/fonts/OFL.txt), embedded as data: URLs so the page needs no other request.
+_FONT_FACES = (("400-normal", 400, "normal"), ("400-italic", 400, "italic"), ("600-normal", 600, "normal"))
+
+
+def _font_css() -> str:
+    return "\n".join(
+        '  @font-face { font-family: "Source Serif 4"; font-style: %s; font-weight: %d; font-display: swap; '
+        'src: url(data:font/woff2;base64,%s) format("woff2"); }'
+        % (style, weight, base64.b64encode((_STATIC / "fonts" / f"source-serif-4-latin-{name}.woff2").read_bytes()).decode())
+        for name, weight, style in _FONT_FACES
+    )
+
+
+_INDEX_HTML = (_STATIC / "index.html").read_text().replace("/*FONTS*/", _font_css())
 _SCRIPT = re.search(r"<script>(.*?)</script>", _INDEX_HTML, re.S).group(1)
 # The home page is static and carries no data. The CSP allows only its own inline style, its one
-# inline script (by hash) and a same-origin fetch of /healthz — nothing else, nothing third-party.
+# inline script (by hash), its own embedded fonts and same-origin fetches — nothing else, nothing third-party.
 _HOME_HEADERS = {
     "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; connect-src 'self'; "
+        "default-src 'none'; style-src 'unsafe-inline'; font-src data:; connect-src 'self'; "
         f"script-src 'sha256-{base64.b64encode(hashlib.sha256(_SCRIPT.encode()).digest()).decode()}'; "
         "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     ),

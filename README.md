@@ -73,7 +73,8 @@ Muse / MCP client ──HTTPS──▶ same                                └�
 | `api/app/metrics.py` | Usage counters and activity events (batched, flushed to Postgres) and the numbers behind `GET /v1/stats` |
 | `api/app/static/index.html` | Public home page at `/` (static, strict CSP, no external requests; the landing page plus, after the token is accepted, the dashboard view fed by `GET /v1/dashboard` and `GET /v1/stats`) |
 | `api/migrations/` | Versioned SQL |
-| `api/tests/` | 116 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
+| `api/app/static/fonts/` | Source Serif 4 (Latin, 400, 400 italic, 600; SIL OFL, licence in `OFL.txt`, from Fontsource 5.3.1). `main.py` embeds them into the page as `data:` URLs at start-up, so the CSP only needs `font-src data:` |
+| `api/tests/` | 117 pytest tests (need Postgres + Redis; refuse to run outside the test project) |
 | `scripts/` | `dev.sh`, `acceptance.sh`, `backup.sh`, `restore-check.sh`, `live_check.py` |
 | `deploy/` | `intoday.pkasemer.com.conf` (HTTP-only nginx block), `install-nginx.sh` (installs it + certbot), `enable-homepage.sh` (routes `/` to the home page) |
 | `.env.example` | Variable names only; `.env` and `.env.dev` are git-ignored |
@@ -420,14 +421,14 @@ rebuild ≤ 1 h from the repo + latest dump.
 
 ```bash
 scripts/dev.sh up -d --wait db redis    # separate project "intoday-dev", throwaway token in .env.dev
-scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 116 tests (rebuild first: the image bakes in the code)
+scripts/dev.sh build tests && scripts/dev.sh run --rm tests   # 117 tests (rebuild first: the image bakes in the code)
 scripts/acceptance.sh                   # live checks: cold start, Redis outage, backup/restore, log hygiene
 scripts/dev.sh down -v
 ```
 
 The dev project publishes no ports at all and never touches production.
 
-- **116 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
+- **117 tests pass** (real Postgres + Redis, in-process ASGI): auth, push/pull round trip, paging, idempotent
   retry (Redis and Postgres paths), LWW incl. tie-break, tombstones and purge with an injected clock, snapshot
   round trip, erasure, every validation rule, ownership-based income dates, expense month edges, `start_day`
   ignored, all fourteen MCP tools, per-goal totals, usage counters and `/v1/stats` (incl. restart survival, erasure, the activity feed, rejection listing, response classes, capped auth bursts and alerts), Redis-down behaviour, rate limits, body cap, the home page and
